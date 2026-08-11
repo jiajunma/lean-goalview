@@ -16,6 +16,16 @@ editor ↔ lean-goalview ↔ lake serve
                                             updates as the cursor moves
 ```
 
+## Two ways to see the goal
+
+**Hover (no file, no panel)** — press `K` (or hover) on a tactic in a proof
+and the goal is appended to the hover popup as a `⊢ Goal` code block. This is
+the primary mode: Zed extensions cannot open a panel or a preview, so the
+goal rides the one rich-text channel LSP already gives every editor.
+
+**Live file** — the proxy also keeps `<project>/.goalview.md` updated; open it
+in a split (raw, or `cmd-k v` markdown preview) for an always-visible view.
+
 ## How it works
 
 `lean-goalview` is a transparent LSP proxy around `lake serve`:
