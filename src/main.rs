@@ -94,6 +94,17 @@ fn severity_icon(sev: u64) -> &'static str {
     }
 }
 
+/// A 4-space-indented markdown code block: renders as a code box in preview,
+/// but in raw text it's just clean indentation — no ``` fences to read past.
+fn code_block(out: &mut String, body: &str) {
+    for line in body.lines() {
+        out.push_str("    ");
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push('\n');
+}
+
 fn render(state: &State) -> String {
     let mut out = String::new();
     let (uri, line) = match &state.cursor {
@@ -129,14 +140,15 @@ fn render(state: &State) -> String {
                 out.push_str("## Goals accomplished 🎉\n\n");
             } else {
                 out.push_str(&format!(
-                    "## Tactic state ({} goal{})\n\n",
+                    "## Tactic state · {} goal{}\n\n",
                     goals.len(),
                     if goals.len() == 1 { "" } else { "s" }
                 ));
-                for g in &goals {
-                    out.push_str("```lean\n");
-                    out.push_str(g);
-                    out.push_str("\n```\n\n");
+                for (i, g) in goals.iter().enumerate() {
+                    if goals.len() > 1 {
+                        out.push_str(&format!("**goal {} / {}**\n\n", i + 1, goals.len()));
+                    }
+                    code_block(&mut out, g);
                 }
             }
         }
@@ -145,9 +157,8 @@ fn render(state: &State) -> String {
     // Expected type ($/lean/plainTermGoal): { goal: String, range }.
     if let Some(tg) = &state.term_goal {
         if let Some(goal) = tg["goal"].as_str() {
-            out.push_str("## Expected type\n\n```lean\n");
-            out.push_str(goal);
-            out.push_str("\n```\n\n");
+            out.push_str("## Expected type\n\n");
+            code_block(&mut out, goal);
         }
     }
 
@@ -159,7 +170,8 @@ fn render(state: &State) -> String {
                 let l = d["range"]["start"]["line"].as_u64().unwrap_or(0) + 1;
                 let sev = severity_icon(d["severity"].as_u64().unwrap_or(3));
                 let msg = d["message"].as_str().unwrap_or("");
-                out.push_str(&format!("**{sev} line {l}**\n\n```\n{msg}\n```\n\n"));
+                out.push_str(&format!("**{sev} line {l}**\n\n"));
+                code_block(&mut out, msg);
             }
         }
     }
@@ -244,14 +256,27 @@ fn main() {
                                 }),
                             );
                         }
-                        "textDocument/documentHighlight" | "textDocument/hover" => {
+                        // Cursor position leaks out of several editor-initiated
+                        // requests. documentHighlight/hover carry `.position`;
+                        // codeAction carries `.range` (a zero-width range at the
+                        // cursor when there's no selection). Zed fires codeAction
+                        // whenever the cursor settles — even off a symbol, where
+                        // documentHighlight stays silent — so together they track
+                        // the cursor far more tightly than either alone.
+                        "textDocument/documentHighlight"
+                        | "textDocument/hover"
+                        | "textDocument/codeAction" => {
                             let uri = msg["params"]["textDocument"]["uri"]
                                 .as_str()
                                 .unwrap_or("")
                                 .to_string();
-                            let line = msg["params"]["position"]["line"].as_u64().unwrap_or(0);
-                            let ch =
-                                msg["params"]["position"]["character"].as_u64().unwrap_or(0);
+                            let pos = if msg["params"]["position"].is_object() {
+                                &msg["params"]["position"]
+                            } else {
+                                &msg["params"]["range"]["start"]
+                            };
+                            let line = pos["line"].as_u64().unwrap_or(0);
+                            let ch = pos["character"].as_u64().unwrap_or(0);
                             if uri.ends_with(".lean") {
                                 state.lock().unwrap().cursor = Some((uri, line, ch));
                                 let _ = tick_tx.send(());
