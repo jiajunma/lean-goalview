@@ -22,7 +22,7 @@
 //!   LEAN_GOALVIEW_LAKE   lake binary (default: `lake` on PATH, else ~/.elan/bin/lake)
 
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -76,7 +76,59 @@ struct State {
     out_path: Option<String>,
     /// In-flight request ids we injected: id -> kind ("goal" | "term").
     pending: HashMap<String, &'static str>,
+    /// Editor hover request ids awaiting a server response we'll enrich.
+    pending_hovers: HashSet<u64>,
     next_id: u64,
+}
+
+/// The cached goal state as hover markdown, or None if there's nothing to add.
+fn goal_hover_markdown(state: &State) -> Option<String> {
+    let pg = state.plain_goal.as_ref()?;
+    let goals: Vec<String> = pg["goals"]
+        .as_array()?
+        .iter()
+        .filter_map(|g| g.as_str().map(String::from))
+        .collect();
+    let mut s = String::new();
+    if goals.is_empty() {
+        s.push_str("**Goals accomplished** 🎉");
+    } else {
+        for (i, g) in goals.iter().enumerate() {
+            if goals.len() > 1 {
+                s.push_str(&format!("*goal {} / {}*\n", i + 1, goals.len()));
+            }
+            s.push_str("```lean\n");
+            s.push_str(g);
+            s.push_str("\n```\n");
+        }
+    }
+    Some(s)
+}
+
+/// Append the goal markdown to a hover response, coping with the several
+/// shapes `result.contents` can take (MarkupContent / string / absent).
+fn inject_goal_into_hover(msg: &mut Value, goal_md: &str) {
+    const SEP: &str = "\n\n---\n\n";
+    let header = format!("**⊢ Goal**\n\n{goal_md}");
+
+    if msg["result"].is_null() {
+        msg["result"] = json!({"contents": {"kind": "markdown", "value": header}});
+        return;
+    }
+    let contents = &msg["result"]["contents"];
+    let existing = if let Some(v) = contents["value"].as_str() {
+        v.to_string() // MarkupContent { kind, value }
+    } else if let Some(v) = contents.as_str() {
+        v.to_string() // bare string
+    } else {
+        String::new() // MarkedString[] or unknown: replace rather than nest
+    };
+    let combined = if existing.is_empty() {
+        header
+    } else {
+        format!("{existing}{SEP}{header}")
+    };
+    msg["result"]["contents"] = json!({"kind": "markdown", "value": combined});
 }
 
 fn uri_to_display(uri: &str) -> String {
@@ -278,7 +330,16 @@ fn main() {
                             let line = pos["line"].as_u64().unwrap_or(0);
                             let ch = pos["character"].as_u64().unwrap_or(0);
                             if uri.ends_with(".lean") {
-                                state.lock().unwrap().cursor = Some((uri, line, ch));
+                                let mut st = state.lock().unwrap();
+                                st.cursor = Some((uri, line, ch));
+                                // Remember hover requests so their responses can
+                                // be enriched with the goal on the way back.
+                                if method == "textDocument/hover" {
+                                    if let Some(id) = msg["id"].as_u64() {
+                                        st.pending_hovers.insert(id);
+                                    }
+                                }
+                                drop(st);
                                 let _ = tick_tx.send(());
                             }
                         }
@@ -307,6 +368,30 @@ fn main() {
                         continue;
                     }
                 };
+
+                // Response to an editor hover we flagged? Enrich it with the
+                // goal, then forward under the editor's original id.
+                if let Some(id) = msg["id"].as_u64() {
+                    let goal = {
+                        let mut st = state.lock().unwrap();
+                        if st.pending_hovers.remove(&id) {
+                            Some(goal_hover_markdown(&st))
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(goal_md) = goal {
+                        match goal_md {
+                            Some(g) => {
+                                let mut m = msg;
+                                inject_goal_into_hover(&mut m, &g);
+                                write_frame(&mut stdout.lock(), m.to_string().as_bytes());
+                            }
+                            None => write_frame(&mut stdout.lock(), &body),
+                        }
+                        continue;
+                    }
+                }
 
                 // Response to one of OUR injected requests? Consume it.
                 if let Some(id) = msg["id"].as_str() {
