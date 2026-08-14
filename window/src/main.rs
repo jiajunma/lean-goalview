@@ -23,10 +23,22 @@ enum UserEvent {
     Minimize,
 }
 
+/// URL to load: an explicit arg wins, else the port the proxy recorded, else
+/// the default. This lets a Zed task launch the window with no arguments.
+fn resolve_url() -> String {
+    if let Some(arg) = std::env::args().nth(1) {
+        return arg;
+    }
+    let tmp = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into());
+    let port = std::fs::read_to_string(format!("{}/lean-goalview.port", tmp.trim_end_matches('/')))
+        .ok()
+        .and_then(|s| s.trim().parse::<u16>().ok())
+        .unwrap_or(6237);
+    format!("http://127.0.0.1:{port}/")
+}
+
 fn main() -> wry::Result<()> {
-    let url = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "http://127.0.0.1:6237/".to_string());
+    let url = resolve_url();
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();

@@ -501,6 +501,13 @@ fn start_http(
 ) -> Option<u16> {
     let listener = (6237u16..6247).find_map(|p| TcpListener::bind(("127.0.0.1", p)).ok())?;
     let port = listener.local_addr().ok()?.port();
+    // Record the chosen port so `lean-goalview-window` (or a Zed task) can find
+    // the server without being told which port it landed on.
+    let tmp = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into());
+    let _ = std::fs::write(
+        format!("{}/lean-goalview.port", tmp.trim_end_matches('/')),
+        port.to_string(),
+    );
     std::thread::spawn(move || {
         for conn in listener.incoming().flatten() {
             let mut stream = conn;
