@@ -51,6 +51,16 @@ fn send(msg: Value) {
     let _ = w.flush();
 }
 
+/// Session log at $TMPDIR/lean-goalview-dap.log — the debug panel gives no
+/// console, so this is how a dropped session gets diagnosed.
+fn dlog(msg: &str) {
+    let tmp = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into());
+    let path = format!("{}/lean-goalview-dap.log", tmp.trim_end_matches('/'));
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
 static SEQ: AtomicI64 = AtomicI64::new(1);
 
 fn respond(req: &Value, success: bool, body: Value) {
@@ -188,6 +198,7 @@ fn rebuild(model: &mut Model, snap: &Value) {
 // ------------------------------------------------------------------ main ---
 
 fn main() {
+    dlog("=== adapter started ===");
     let model = Arc::new(Mutex::new(Model::default()));
     let configured = Arc::new(AtomicBool::new(false));
 
@@ -204,6 +215,7 @@ fn main() {
             );
             loop {
                 if let Ok(stream) = UnixStream::connect(&sock_path) {
+                    dlog("socket: connected to proxy");
                     let mut reader = BufReader::new(stream);
                     let mut line = String::new();
                     loop {
@@ -240,8 +252,10 @@ fn main() {
     while let Some(body) = read_frame(&mut reader) {
         let Ok(msg) = serde_json::from_slice::<Value>(&body) else { continue };
         if msg["type"].as_str() != Some("request") {
+            dlog(&format!("<- non-request: {}", msg["type"]));
             continue;
         }
+        dlog(&format!("<- {}", msg["command"].as_str().unwrap_or("?")));
         match msg["command"].as_str().unwrap_or("") {
             "initialize" => {
                 respond(
@@ -334,6 +348,7 @@ fn main() {
                 );
             }
             "disconnect" | "terminate" => {
+                dlog("-> exiting on disconnect/terminate");
                 respond(&msg, true, json!({}));
                 event("terminated", json!({}));
                 std::process::exit(0);
@@ -341,4 +356,5 @@ fn main() {
             _ => respond(&msg, true, json!({})),
         }
     }
+    dlog("stdin EOF — client hung up");
 }

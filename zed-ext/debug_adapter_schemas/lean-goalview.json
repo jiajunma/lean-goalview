@@ -1,0 +1,8 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Lean Goalview",
+  "description": "Shows the Lean goal state at the cursor in the debug panel. No configuration needed.",
+  "type": "object",
+  "properties": {},
+  "additionalProperties": true
+}
