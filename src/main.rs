@@ -24,6 +24,8 @@
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -229,6 +231,174 @@ fn render(state: &State) -> String {
     }
 
     out
+}
+
+/// Structured goal state for the GPUI window (which does its own layout),
+/// as opposed to `render()`'s pre-formatted markdown for the file/preview.
+fn goal_json(state: &State) -> String {
+    let (file, line) = match &state.cursor {
+        Some((u, l, _)) => (u.rsplit('/').next().unwrap_or(u).to_string(), *l + 1),
+        None => (String::new(), 0),
+    };
+    let busy = state
+        .cursor
+        .as_ref()
+        .map(|(u, _, _)| state.processing.get(u).copied().unwrap_or(false))
+        .unwrap_or(false);
+    let goals: Vec<Value> = state
+        .plain_goal
+        .as_ref()
+        .and_then(|pg| pg["goals"].as_array())
+        .map(|a| a.to_vec())
+        .unwrap_or_default();
+    let term = state
+        .term_goal
+        .as_ref()
+        .and_then(|t| t["goal"].as_str())
+        .map(String::from);
+    let messages: Vec<Value> = state
+        .cursor
+        .as_ref()
+        .and_then(|(u, _, _)| state.diagnostics.get(u))
+        .and_then(|d| d.as_array())
+        .map(|a| {
+            a.iter()
+                .map(|d| {
+                    json!({
+                        "line": d["range"]["start"]["line"].as_u64().unwrap_or(0) + 1,
+                        "severity": d["severity"].as_u64().unwrap_or(3),
+                        "text": d["message"].as_str().unwrap_or(""),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    json!({
+        "file": file, "line": line, "busy": busy,
+        "goals": goals, "termGoal": term, "messages": messages,
+    })
+    .to_string()
+}
+
+/// Push a JSON line to every connected socket client, dropping the dead ones.
+fn broadcast(clients: &Mutex<Vec<UnixStream>>, line: &str) {
+    let mut cs = clients.lock().unwrap();
+    cs.retain_mut(|c| c.write_all(line.as_bytes()).and_then(|_| c.write_all(b"\n")).is_ok());
+}
+
+/// Push a goal-state update to every connected browser as an SSE event.
+fn broadcast_sse(clients: &Mutex<Vec<TcpStream>>, json: &str) {
+    let frame = format!("data: {json}\n\n");
+    let mut cs = clients.lock().unwrap();
+    cs.retain_mut(|c| c.write_all(frame.as_bytes()).and_then(|_| c.flush()).is_ok());
+}
+
+/// The goal-view web page: connects to /events (SSE) and renders each update.
+/// Self-contained, theme-aware, no external requests.
+const PAGE: &str = r####"<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lean Goal View</title><style>
+:root{--bg:#fbfbfd;--fg:#1c1c22;--dim:#6b6b78;--acc:#1f6feb;--card:#fff;--bd:#e3e3ea;--goal:#0b7285;--hyp:#364fc7}
+@media(prefers-color-scheme:dark){:root{--bg:#181820;--fg:#e6e6ee;--dim:#9a9aa8;--acc:#58a6ff;--card:#21212b;--bd:#33333f;--goal:#66d9e8;--hyp:#a5b4fc}}
+*{box-sizing:border-box}body{margin:0;font:14px/1.5 -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--fg)}
+header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--bd);padding:8px 14px;display:flex;gap:8px;align-items:baseline}
+header .f{font-weight:600}header .l{color:var(--dim)}header .b{margin-left:auto;color:var(--acc);font-size:12px}
+main{padding:12px 14px}.sec{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin:14px 0 6px}
+.goal{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin:6px 0;
+font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-x:auto}
+.goal .t{color:var(--goal)}.msg{border-left:3px solid var(--bd);padding:4px 10px;margin:6px 0;white-space:pre-wrap;
+font:12px/1.5 ui-monospace,monospace}.msg.e{border-color:#e5484d}.msg.w{border-color:#f5a623}
+.empty{color:var(--dim);font-style:italic;padding:20px 0}.gn{color:var(--dim);font-size:12px;margin:8px 0 2px}
+.ok{color:#2f9e44;font-weight:600;padding:8px 0}
+</style></head><body>
+<header><span class="f" id="file">Lean Goal View</span><span class="l" id="line"></span><span class="b" id="busy"></span></header>
+<main id="main"><div class="empty">Waiting for the cursor to enter a proof…</div></main>
+<script>
+const M=document.getElementById('main'),F=document.getElementById('file'),L=document.getElementById('line'),B=document.getElementById('busy');
+// mark the turnstile so it can be tinted
+function esc(s){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}
+function goalHtml(g){return esc(g).replace(/⊢/g,'<span class="t">⊢</span>')}
+function render(d){
+  F.textContent=d.file||'Lean Goal View';
+  L.textContent=d.line?(':'+d.line):'';
+  B.textContent=d.busy?'⏳ elaborating…':'';
+  let h='';
+  const goals=d.goals||[];
+  if(goals.length===0 && !d.termGoal && (!d.messages||!d.messages.length)){
+    h='<div class="empty">No goals at this position.</div>';
+  }else{
+    if(goals.length){
+      h+='<div class="sec">Tactic state · '+goals.length+' goal'+(goals.length>1?'s':'')+'</div>';
+      goals.forEach((g,i)=>{if(goals.length>1)h+='<div class="gn">goal '+(i+1)+' / '+goals.length+'</div>';
+        h+='<div class="goal">'+goalHtml(g)+'</div>';});
+    }else if(d.termGoal===null||d.termGoal===undefined){
+      // inside a proof with an empty goals array => closed
+    }
+    if(d.termGoal){h+='<div class="sec">Expected type</div><div class="goal">'+goalHtml(d.termGoal)+'</div>';}
+    if(d.messages&&d.messages.length){
+      h+='<div class="sec">Messages</div>';
+      d.messages.forEach(m=>{const c=m.severity===1?'e':m.severity===2?'w':'';
+        h+='<div class="msg '+c+'"><b>line '+m.line+'</b>\n'+esc(m.text)+'</div>';});
+    }
+  }
+  M.innerHTML=h||'<div class="empty">No goals at this position.</div>';
+}
+const ev=new EventSource('/events');
+ev.onmessage=e=>{try{render(JSON.parse(e.data))}catch(x){}};
+ev.onerror=()=>{B.textContent='⚠ disconnected';};
+</script></body></html>"####;
+
+/// Minimal HTTP server: `GET /` serves the page, `GET /events` is an SSE
+/// stream registered for goal broadcasts. Returns the bound port.
+fn start_http(state: Arc<Mutex<State>>, sse: Arc<Mutex<Vec<TcpStream>>>) -> Option<u16> {
+    // Try a small range so two projects don't fight over one port.
+    let listener = (6237u16..6247)
+        .find_map(|p| TcpListener::bind(("127.0.0.1", p)).ok())?;
+    let port = listener.local_addr().ok()?.port();
+    std::thread::spawn(move || {
+        for conn in listener.incoming().flatten() {
+            let mut stream = conn;
+            let mut reader = BufReader::new(match stream.try_clone() {
+                Ok(c) => c,
+                Err(_) => continue,
+            });
+            let mut req = String::new();
+            if reader.read_line(&mut req).is_err() {
+                continue;
+            }
+            // Drain the rest of the request headers.
+            let mut h = String::new();
+            while reader.read_line(&mut h).map(|n| n > 0).unwrap_or(false) {
+                if h == "\r\n" {
+                    break;
+                }
+                h.clear();
+            }
+            if req.starts_with("GET /events") {
+                let hdr = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                           Cache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
+                if stream.write_all(hdr.as_bytes()).is_err() {
+                    continue;
+                }
+                let snap = goal_json(&state.lock().unwrap());
+                let _ = stream.write_all(format!("data: {snap}\n\n").as_bytes());
+                let _ = stream.flush();
+                sse.lock().unwrap().push(stream); // main loop pushes updates
+            } else if req.starts_with("GET / ") || req.starts_with("GET /index") {
+                let body = PAGE.as_bytes();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                let _ = stream.write_all(body);
+            } else {
+                let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+            }
+        }
+    });
+    Some(port)
 }
 
 fn write_out(state: &State, last_written: &mut String) {
@@ -446,7 +616,44 @@ fn main() {
     }
 
     // -- main thread: debounce, fetch, render ------------------------------
+    // Socket for the GPUI goal-view window. Harmless when nothing connects.
+    // Single fixed path per user: one Zed/proxy at a time is the common case;
+    // a later revision can namespace it per workspace.
+    let clients: Arc<Mutex<Vec<UnixStream>>> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let clients = Arc::clone(&clients);
+        let state = Arc::clone(&state);
+        let sock_path = format!(
+            "{}/lean-goalview.sock",
+            std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into()).trim_end_matches('/')
+        );
+        std::thread::spawn(move || {
+            let _ = std::fs::remove_file(&sock_path);
+            if let Ok(listener) = UnixListener::bind(&sock_path) {
+                for stream in listener.incoming().flatten() {
+                    // Push the current snapshot immediately, so a window that
+                    // connects after the goal has settled still gets it.
+                    let mut s = stream;
+                    let snap = goal_json(&state.lock().unwrap());
+                    let _ = s.write_all(snap.as_bytes()).and_then(|_| s.write_all(b"\n"));
+                    clients.lock().unwrap().push(s);
+                }
+            }
+        });
+    }
+
+    // Web goal view: tiny HTTP+SSE server, browser auto-opened on startup.
+    let sse: Arc<Mutex<Vec<TcpStream>>> = Arc::new(Mutex::new(Vec::new()));
+    if let Some(port) = start_http(Arc::clone(&state), Arc::clone(&sse)) {
+        if std::env::var("LEAN_GOALVIEW_NO_OPEN").is_err() {
+            let url = format!("http://127.0.0.1:{port}/");
+            let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+            let _ = Command::new(opener).arg(&url).spawn();
+        }
+    }
+
     let mut last_written = String::new();
+    let mut last_broadcast = String::new();
     let mut last_fetch_pos: Option<(String, u64, u64)> = None;
     loop {
         // Wait for activity, then let events settle.
@@ -486,6 +693,16 @@ fn main() {
             last_fetch_pos = cursor;
         }
 
-        write_out(&state.lock().unwrap(), &mut last_written);
+        {
+            let st = state.lock().unwrap();
+            write_out(&st, &mut last_written);
+            let json = goal_json(&st);
+            drop(st);
+            if json != last_broadcast {
+                last_broadcast = json.clone();
+                broadcast(&clients, &json);
+                broadcast_sse(&sse, &json);
+            }
+        }
     }
 }
