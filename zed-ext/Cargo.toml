@@ -1,0 +1,15 @@
+[package]
+name = "lean-goalview-ext"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "0.6.0"
+
+# Standalone: not a member of the parent workspace (Zed compiles this dir on its own).
+[workspace]

@@ -13,4 +13,4 @@ tungstenite = "0.24"
 strip = true
 
 [workspace]
-members = ["window"]
+members = ["window", "dap"]

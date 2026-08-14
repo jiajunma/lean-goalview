@@ -242,9 +242,13 @@ fn render(state: &State) -> String {
 /// Structured goal state for the GPUI window (which does its own layout),
 /// as opposed to `render()`'s pre-formatted markdown for the file/preview.
 fn goal_json(state: &State) -> String {
-    let (file, line) = match &state.cursor {
-        Some((u, l, _)) => (u.rsplit('/').next().unwrap_or(u).to_string(), *l + 1),
-        None => (String::new(), 0),
+    let (file, path, line) = match &state.cursor {
+        Some((u, l, _)) => (
+            u.rsplit('/').next().unwrap_or(u).to_string(),
+            u.strip_prefix("file://").unwrap_or(u).to_string(),
+            *l + 1,
+        ),
+        None => (String::new(), String::new(), 0),
     };
     let busy = state
         .cursor
@@ -280,7 +284,7 @@ fn goal_json(state: &State) -> String {
         })
         .unwrap_or_default();
     json!({
-        "file": file, "line": line, "busy": busy,
+        "file": file, "path": path, "line": line, "busy": busy,
         "goals": goals, "termGoal": term, "messages": messages,
     })
     .to_string()

@@ -1,0 +1,9 @@
+[package]
+name = "lean-goalview-dap"
+version = "0.1.0"
+edition = "2021"
+description = "DAP adapter presenting Lean goal state in the editor's native debug panel"
+license = "MIT"
+
+[dependencies]
+serde_json = "1"

@@ -1,0 +1,9 @@
+id = "lean-goalview"
+name = "Lean Goalview"
+description = "Lean goal state in the native debug panel, following the cursor (requires the lean-goalview proxy)"
+version = "0.1.0"
+schema_version = 1
+authors = ["Jiajun Ma <hoxide@gmail.com>"]
+repository = "https://github.com/jiajunma/lean-goalview"
+
+[debug_adapters.lean-goalview]

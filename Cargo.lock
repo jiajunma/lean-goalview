@@ -1065,6 +1065,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lean-goalview-dap"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "lean-goalview-window"
 version = "0.1.0"
 dependencies = [
