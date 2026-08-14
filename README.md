@@ -1,77 +1,58 @@
 # lean-goalview
 
-A Lean 4 **goal view** for editors that cannot host the official infoview —
-built for [Zed](https://zed.dev), works with any plain-LSP editor.
+The **official Lean 4 infoview** in a floating native window, for editors that
+can't host it themselves (Zed, and any plain-LSP editor).
 
-Zed has no webview (its GPUI renderer ships no browser engine), so the
-official `@leanprover/infoview` — a React app — cannot run inside it, and
-Zed extensions cannot touch the LSP stream to feed one elsewhere. This tool
-takes the [lean.nvim](https://github.com/Julian/lean.nvim) approach instead:
-the same goal-state data the infoview consumes, rendered as live text.
+Zed has no webview and its extensions can't open panels or touch the LSP
+stream, so the official `@leanprover/infoview` — a web app — can't live inside
+it. lean-goalview runs it *beside* the editor instead: an LSP proxy multiplexes
+the infoview onto the same `lake serve`, and a tiny native window (embedded
+WebKit, no bundled browser) renders it, always-on-top and following the cursor.
 
 ```
-editor ↔ lean-goalview ↔ lake serve
-              │
-              └→ <project>/.goalview.md   ← keep open in a split;
-                                            updates as the cursor moves
+Zed ──LSP──> lean-goalview (proxy) ──> lake serve
+                  │  HTTP + /ws bridge
+                  ▼
+        lean-goalview-window (native, embedded WebKit)
+                  loads the official @leanprover/infoview
 ```
 
-## Two ways to see the goal
+## What you get
 
-**Hover (no file, no panel)** — press `K` (or hover) on a tactic in a proof
-and the goal is appended to the hover popup as a `⊢ Goal` code block. This is
-the primary mode: Zed extensions cannot open a panel or a preview, so the
-goal rides the one rich-text channel LSP already gives every editor.
-
-**Live file** — the proxy also keeps `<project>/.goalview.md` updated; open it
-in a split (raw, or `cmd-k v` markdown preview) for an always-visible view.
-
-## How it works
-
-`lean-goalview` is a transparent LSP proxy around `lake serve`:
-
-1. All traffic passes through untouched — the editor sees a normal Lean
-   language server.
-2. The editor's own `textDocument/documentHighlight` requests (Zed sends one
-   whenever the cursor rests on a symbol) reveal the cursor position.
-3. On each position change (debounced 120 ms) the proxy asks the server for
-   `$/lean/plainGoal` and `$/lean/plainTermGoal` — using string request ids
-   (`gv:N`) that cannot collide with the editor's numeric ids — and renders
-   tactic state, expected type, and diagnostics into `.goalview.md`,
-   written atomically and only on change.
-
-The rendering shows exactly what the infoview's goal panel shows (case
-names, hypotheses, `⊢` goals, error messages). What it deliberately does
-not attempt: hover cards, expandable sub-terms, and ProofWidgets — those are
-JavaScript executed by the browser-based infoview and cannot exist in a text
-file. For proofs that need them, use VS Code or lean.nvim.
+- The **real** infoview: interactive goals, clickable subterms, ProofWidgets.
+- A floating window, auto-opened when you open a Lean file, following the
+  cursor. ⌘T toggles always-on-top; ⌘W / Esc hides it.
+- Also a fallback plain goal view over hover (`K`) and a live `.goalview.md`.
 
 ## Install
 
-```bash
-cargo install --path .            # or: cargo build --release && copy the binary
+```sh
+git clone https://github.com/jiajunma/lean-goalview.git
+cd lean-goalview && ./install.sh
 ```
 
-### Zed setup
-
-With the [lean4 extension](https://zed.dev/extensions/lean4) installed, add
-to `settings.json`:
+Needs Rust (cargo), Node (npm), and a Lean toolchain (elan). Then point Zed's
+Lean language server at the proxy in `settings.json`:
 
 ```json
 {
-  "lsp": {
-    "lean4-lsp": {
-      "binary": {
-        "path": "/absolute/path/to/lean-goalview",
-        "arguments": []
-      }
-    }
-  }
+  "lsp": { "lean4-lsp": { "binary": { "path": "/absolute/.local/bin/lean-goalview" } } }
 }
 ```
 
-Open a `.lean` file, then open `.goalview.md` (project root) in a split —
-raw or as markdown preview. Add `.goalview.md` to your `.gitignore`.
+Open a `.lean` file in Zed — the infoview window opens on its own.
+
+## How it works
+
+The proxy is transparent between the editor and `lake serve`. It also:
+
+1. **Serves the built infoview** (`webui/`, a host page implementing the
+   official `EditorApi` + a WebSocket transport) as static files.
+2. **Bridges `/ws`**: infoview RPC requests are multiplexed onto `lake serve`
+   (id-tagged `iv:N`), their responses routed back; the `initialize` result
+   becomes `serverRestarted`; server notifications are forwarded; cursor moves
+   are pushed. The infoview constructs the Lean RPC calls itself, so the proxy
+   only relays `(uri, method, params)` faithfully.
 
 ## Configuration
 
