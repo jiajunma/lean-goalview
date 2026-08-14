@@ -1,8 +1,12 @@
-/* The official infoview styles against VS Code's theme CSS variables, which
- * VS Code injects into its webviews. Outside VS Code nobody defines them, so
- * e.g. hover cards get a transparent background and bleed into the content
- * underneath. This file supplies the full set the infoview references
- * (VS Code Light+/Dark+ palette), switching on the system color scheme. */
+/* Theme for the standalone infoview host.
+ *
+ * The official infoview styles against VS Code's theme variables (VS Code
+ * injects them into its webviews; standalone they are all undefined, which
+ * left hover cards transparent and goal syntax uncolored). This file defines
+ * every variable the stylesheet references — including the five
+ * `--vscode-lean4-infoView.*` syntax colors (note the literal dots, escaped) —
+ * using the One Dark / One Light palettes so the window matches Zed.
+ */
 
 :root {
   --vscode-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
@@ -14,52 +18,68 @@
   --vscode-editor-font-feature-settings: normal;
   --vscode-editor-line-height: 1.5;
 
-  --vscode-editor-foreground: #3b3b3b;
-  --vscode-editorHoverWidget-background: #f8f8f8;
-  --vscode-editorHoverWidget-foreground: #3b3b3b;
-  --vscode-editorHoverWidget-border: #c8c8c8;
+  /* One Light */
+  --vscode-editor-foreground: #383a42;
+  --vscode-editorHoverWidget-background: #eaeaeb;
+  --vscode-editorHoverWidget-foreground: #383a42;
+  --vscode-editorHoverWidget-border: #c9c9ca;
   --vscode-widget-shadow: rgba(0, 0, 0, 0.16);
-  --vscode-textCodeBlock-background: rgba(220, 220, 220, 0.4);
-  --vscode-dropdown-background: #ffffff;
-  --vscode-dropdown-foreground: #3b3b3b;
-  --vscode-dropdown-border: #c8c8c8;
-  --vscode-editor-selectionBackground: #add6ff;
-  --vscode-editor-findMatchBackground: #a8ac94;
-  --vscode-editorOverviewRuler-rangeHighlightForeground: rgba(0, 122, 204, 0.6);
-  --vscode-diffEditor-insertedTextBackground: rgba(155, 185, 85, 0.25);
+  --vscode-textCodeBlock-background: rgba(56, 58, 66, 0.08);
+  --vscode-dropdown-background: #fafafa;
+  --vscode-dropdown-foreground: #383a42;
+  --vscode-dropdown-border: #c9c9ca;
+  --vscode-editor-selectionBackground: #e5e5e6;
+  --vscode-editor-findMatchBackground: #f2c74666;
+  --vscode-editorOverviewRuler-rangeHighlightForeground: rgba(64, 120, 242, 0.6);
+  --vscode-diffEditor-insertedTextBackground: rgba(80, 161, 79, 0.18);
   --vscode-diffEditor-insertedTextBorder: transparent;
-  --vscode-diffEditor-removedTextBackground: rgba(255, 0, 0, 0.2);
+  --vscode-diffEditor-removedTextBackground: rgba(228, 86, 73, 0.18);
   --vscode-diffEditor-removedTextBorder: transparent;
+
+  /* Goal syntax colors (One Light accents). */
+  --vscode-lean4-infoView\.turnstile: #50a14f;                 /* ⊢ green */
+  --vscode-lean4-infoView\.hypothesisName: #4078f2;            /* blue */
+  --vscode-lean4-infoView\.inaccessibleHypothesisName: #a0a1a7;/* muted */
+  --vscode-lean4-infoView\.caseLabel: #0184bc;                 /* cyan */
+  --vscode-lean4-infoView\.goalCount: #c18401;                 /* yellow */
 
   color-scheme: light dark;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --vscode-editor-foreground: #cccccc;
-    --vscode-editorHoverWidget-background: #252526;
-    --vscode-editorHoverWidget-foreground: #cccccc;
-    --vscode-editorHoverWidget-border: #454545;
-    --vscode-widget-shadow: rgba(0, 0, 0, 0.36);
-    --vscode-textCodeBlock-background: rgba(255, 255, 255, 0.08);
-    --vscode-dropdown-background: #3c3c3c;
-    --vscode-dropdown-foreground: #f0f0f0;
-    --vscode-dropdown-border: #3c3c3c;
-    --vscode-editor-selectionBackground: #264f78;
-    --vscode-editor-findMatchBackground: #515c6a;
-    --vscode-editorOverviewRuler-rangeHighlightForeground: rgba(0, 122, 204, 0.6);
-    --vscode-diffEditor-insertedTextBackground: rgba(155, 185, 85, 0.25);
-    --vscode-diffEditor-removedTextBackground: rgba(255, 0, 0, 0.25);
+    /* One Dark */
+    --vscode-editor-foreground: #abb2bf;
+    --vscode-editorHoverWidget-background: #2f343e;
+    --vscode-editorHoverWidget-foreground: #abb2bf;
+    --vscode-editorHoverWidget-border: #414855;
+    --vscode-widget-shadow: rgba(0, 0, 0, 0.4);
+    --vscode-textCodeBlock-background: rgba(255, 255, 255, 0.07);
+    --vscode-dropdown-background: #333842;
+    --vscode-dropdown-foreground: #abb2bf;
+    --vscode-dropdown-border: #414855;
+    --vscode-editor-selectionBackground: #3e4451;
+    --vscode-editor-findMatchBackground: #42557b;
+    --vscode-editorOverviewRuler-rangeHighlightForeground: rgba(97, 175, 239, 0.6);
+    --vscode-diffEditor-insertedTextBackground: rgba(152, 195, 121, 0.18);
+    --vscode-diffEditor-removedTextBackground: rgba(224, 108, 117, 0.18);
+
+    /* Goal syntax colors (One Dark accents). */
+    --vscode-lean4-infoView\.turnstile: #98c379;                 /* ⊢ green */
+    --vscode-lean4-infoView\.hypothesisName: #61afef;            /* blue */
+    --vscode-lean4-infoView\.inaccessibleHypothesisName: #5c6370;/* muted */
+    --vscode-lean4-infoView\.caseLabel: #56b6c2;                 /* cyan */
+    --vscode-lean4-infoView\.goalCount: #e5c07b;                 /* yellow */
   }
 }
 
-/* Page ground: the infoview assumes the host paints an editor-like surface. */
+/* Page ground, matching Zed One Light / One Dark editor backgrounds. */
 html, body {
-  background: #ffffff;
+  background: #fafafa;
   color: var(--vscode-editor-foreground);
   font-family: var(--vscode-font-family);
   font-size: var(--vscode-font-size);
 }
 @media (prefers-color-scheme: dark) {
-  html, body { background: #1e1e1e; }
+  html, body { background: #282c33; }
 }
