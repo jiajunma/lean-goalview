@@ -292,6 +292,16 @@ fn broadcast(clients: &Mutex<Vec<UnixStream>>, line: &str) {
     cs.retain_mut(|c| c.write_all(line.as_bytes()).and_then(|_| c.write_all(b"\n")).is_ok());
 }
 
+/// Append a line to the debug log, so infrequent events (like edit forwarding)
+/// can be confirmed without attaching a console.
+fn debug_log(msg: &str) {
+    let tmp = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into());
+    let path = format!("{}/lean-goalview.log", tmp.trim_end_matches('/'));
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{msg}");
+    }
+}
+
 /// Locate a helper binary: next to this executable first, then on PATH.
 fn which_sibling(name: &str) -> Option<String> {
     if let Ok(exe) = std::env::current_exe() {
@@ -436,12 +446,29 @@ fn handle_ws_message(text: &str, hub: &WsHub, tx: &Sender<String>) {
             // apply it via a server→client workspace/applyEdit request. The
             // editor's response carries our `iv-edit:` id and is dropped in the
             // editor→server thread.
+            //
+            // Strip document versions: Lean stamps the edit with the version at
+            // which the suggestion was produced, and Zed looks up a per-version
+            // snapshot to apply against — which fails ("snapshot not found") if
+            // that version was pruned. With no version the editor applies to the
+            // current buffer, and the suggestion's range is already current.
+            let mut edit = m["edit"].clone();
+            if let Some(dc) = edit.get_mut("documentChanges").and_then(|v| v.as_array_mut()) {
+                for change in dc.iter_mut() {
+                    if let Some(td) = change.get_mut("textDocument") {
+                        if td.get("version").is_some() {
+                            td["version"] = Value::Null;
+                        }
+                    }
+                }
+            }
             let n = hub.counter.fetch_add(1, Ordering::Relaxed);
             let req = json!({
                 "jsonrpc": "2.0", "id": format!("iv-edit:{n}"),
                 "method": "workspace/applyEdit",
-                "params": {"edit": m["edit"]},
+                "params": {"edit": edit},
             });
+            debug_log(&format!("applyEdit → editor: {}", req["params"]["edit"]));
             write_frame(&mut std::io::stdout().lock(), req.to_string().as_bytes());
         }
         _ => {} // sub/unsub: the frontend filters, nothing to track here
