@@ -9,7 +9,7 @@
 //! Usage: lean-goalview-window [URL]   (default http://127.0.0.1:6237/)
 
 use tao::{
-    dpi::LogicalSize,
+    dpi::{LogicalSize, PhysicalPosition, PhysicalSize},
     event::{ElementState, Event, KeyEvent, WindowEvent},
     event_loop::{ControlFlow, EventLoopBuilder},
     keyboard::{Key, ModifiersState},
@@ -21,6 +21,32 @@ use wry::WebViewBuilder;
 enum UserEvent {
     ToggleFloat,
     Minimize,
+}
+
+/// Saved window frame (physical px), so the window reopens exactly where the
+/// user last put it.
+fn frame_path() -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    format!("{home}/.local/share/lean-goalview/window-frame.json")
+}
+
+fn load_frame() -> Option<(i32, i32, u32, u32)> {
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(frame_path()).ok()?).ok()?;
+    let (x, y) = (v["x"].as_i64()? as i32, v["y"].as_i64()? as i32);
+    let (w, h) = (v["w"].as_u64()? as u32, v["h"].as_u64()? as u32);
+    (w >= 200 && h >= 200).then_some((x, y, w, h))
+}
+
+fn save_frame(x: i32, y: i32, w: u32, h: u32) {
+    let p = frame_path();
+    if let Some(dir) = std::path::Path::new(&p).parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(
+        p,
+        serde_json::json!({"x": x, "y": y, "w": w, "h": h}).to_string(),
+    );
 }
 
 /// URL to load: an explicit arg wins, else the port the proxy recorded, else
@@ -43,11 +69,29 @@ fn main() -> wry::Result<()> {
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
+    // Layout on open: last saved frame if there is one, else dock to the
+    // right edge of the primary screen at full working height.
+    let saved = load_frame();
+    let default_frame = event_loop.primary_monitor().map(|m| {
+        let scale = m.scale_factor();
+        let pos = m.position();
+        let size = m.size();
+        let width = (420.0 * scale) as u32;
+        let menubar = (25.0 * scale) as i32;
+        (
+            pos.x + size.width as i32 - width as i32,
+            pos.y + menubar,
+            width,
+            size.height.saturating_sub(menubar as u32),
+        )
+    });
+    let (x, y, w, h) = saved.or(default_frame).unwrap_or((100, 100, 460, 720));
+
     let window = WindowBuilder::new()
         .with_title("Lean Infoview")
-        // Freely resizable (tao's default); start at a sensible size and keep a
-        // floor so it can't be shrunk into uselessness.
-        .with_inner_size(LogicalSize::new(460.0, 720.0))
+        // Freely resizable (tao's default); floor so it can't be shrunk away.
+        .with_inner_size(PhysicalSize::new(w, h))
+        .with_position(PhysicalPosition::new(x, y))
         .with_min_inner_size(LogicalSize::new(240.0, 200.0))
         // Float above the editor so the goal stays visible while you type.
         .with_always_on_top(true)
@@ -74,6 +118,12 @@ fn main() -> wry::Result<()> {
         })
         .build(&window)?;
 
+    let persist = |window: &tao::window::Window| {
+        if let (Ok(pos), size) = (window.outer_position(), window.inner_size()) {
+            save_frame(pos.x, pos.y, size.width, size.height);
+        }
+    };
+    let mut last_persist = std::time::Instant::now();
     let mut on_top = true;
     let mut mods = ModifiersState::empty();
     event_loop.run(move |event, _, control_flow| {
@@ -85,7 +135,18 @@ fn main() -> wry::Result<()> {
             }
             Event::UserEvent(UserEvent::Minimize) => window.set_minimized(true),
             Event::WindowEvent { event, .. } => match event {
-                WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+                WindowEvent::CloseRequested => {
+                    persist(&window);
+                    *control_flow = ControlFlow::Exit;
+                }
+                // Remember where the user puts the window (throttled: drags
+                // fire these continuously).
+                WindowEvent::Moved(_) | WindowEvent::Resized(_) => {
+                    if last_persist.elapsed() > std::time::Duration::from_millis(500) {
+                        persist(&window);
+                        last_persist = std::time::Instant::now();
+                    }
+                }
                 WindowEvent::ModifiersChanged(m) => mods = m,
                 WindowEvent::KeyboardInput {
                     event: KeyEvent { logical_key, state: ElementState::Pressed, .. },

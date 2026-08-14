@@ -1075,6 +1075,7 @@ dependencies = [
 name = "lean-goalview-window"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "tao",
  "wry",
 ]
