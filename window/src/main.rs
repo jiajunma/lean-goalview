@@ -5,8 +5,9 @@
 //! Usage: lean-goalview-window [URL]   (default http://127.0.0.1:6237/)
 
 use tao::{
-    event::{Event, WindowEvent},
+    event::{ElementState, Event, KeyEvent, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
+    keyboard::{Key, ModifiersState},
     window::WindowBuilder,
 };
 use wry::WebViewBuilder;
@@ -20,6 +21,8 @@ fn main() -> wry::Result<()> {
     let window = WindowBuilder::new()
         .with_title("Lean Goal View")
         .with_inner_size(tao::dpi::LogicalSize::new(460.0, 720.0))
+        // Float above the editor so the goal stays visible while you type.
+        .with_always_on_top(true)
         .build(&event_loop)
         .expect("failed to build window");
 
@@ -27,10 +30,35 @@ fn main() -> wry::Result<()> {
         .with_url(&url)
         .build(&window)?;
 
+    let mut on_top = true;
+    let mut mods = ModifiersState::empty();
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
-        if let Event::WindowEvent { event: WindowEvent::CloseRequested, .. } = event {
-            *control_flow = ControlFlow::Exit;
+        if let Event::WindowEvent { event, .. } = event {
+            match event {
+                WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+                WindowEvent::ModifiersChanged(m) => mods = m,
+                WindowEvent::KeyboardInput {
+                    event: KeyEvent { logical_key, state: ElementState::Pressed, .. },
+                    ..
+                } => {
+                    let cmd = mods.super_key() || mods.control_key();
+                    match logical_key {
+                        // ⌘T: toggle always-on-top (float / normal).
+                        Key::Character(ref c) if cmd && c.eq_ignore_ascii_case("t") => {
+                            on_top = !on_top;
+                            window.set_always_on_top(on_top);
+                        }
+                        // ⌘W or Escape: hide the window (relaunches on next open).
+                        Key::Character(ref c) if cmd && c.eq_ignore_ascii_case("w") => {
+                            window.set_visible(false);
+                        }
+                        Key::Escape => window.set_visible(false),
+                        _ => {}
+                    }
+                }
+                _ => {}
+            }
         }
     });
 }
