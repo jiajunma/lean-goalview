@@ -56,6 +56,10 @@ fn main() -> wry::Result<()> {
 
     let _webview = WebViewBuilder::new()
         .with_url(&url)
+        // Without this, macOS swallows the first click on a non-key window
+        // (which an always-on-top helper usually is) just to focus it, so
+        // buttons and infoview links appear "unclickable". Let clicks through.
+        .with_accept_first_mouse(true)
         // Right-click → Inspect Element opens the console (for diagnosing
         // infoview/widget issues).
         .with_devtools(true)
