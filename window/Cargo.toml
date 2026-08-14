@@ -1,0 +1,14 @@
+[package]
+name = "lean-goalview-window"
+version = "0.1.0"
+edition = "2021"
+description = "Native window embedding a WebKit webview that renders the Lean goal view"
+license = "MIT"
+
+[[bin]]
+name = "lean-goalview-window"
+path = "src/main.rs"
+
+[dependencies]
+wry = "0.56"
+tao = "0.36"

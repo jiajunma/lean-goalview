@@ -286,6 +286,25 @@ fn broadcast(clients: &Mutex<Vec<UnixStream>>, line: &str) {
     cs.retain_mut(|c| c.write_all(line.as_bytes()).and_then(|_| c.write_all(b"\n")).is_ok());
 }
 
+/// Locate a helper binary: next to this executable first, then on PATH.
+fn which_sibling(name: &str) -> Option<String> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let cand = dir.join(name);
+            if cand.is_file() {
+                return Some(cand.to_string_lossy().into_owned());
+            }
+        }
+    }
+    for dir in std::env::var("PATH").unwrap_or_default().split(':') {
+        let cand = std::path::Path::new(dir).join(name);
+        if cand.is_file() {
+            return Some(cand.to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
 /// Push a goal-state update to every connected browser as an SSE event.
 fn broadcast_sse(clients: &Mutex<Vec<TcpStream>>, json: &str) {
     let frame = format!("data: {json}\n\n");
@@ -642,13 +661,25 @@ fn main() {
         });
     }
 
-    // Web goal view: tiny HTTP+SSE server, browser auto-opened on startup.
+    // Web goal view: tiny HTTP+SSE server behind a native window whose
+    // embedded WebKit webview renders the page. Falls back to the default
+    // browser if the window binary isn't installed.
     let sse: Arc<Mutex<Vec<TcpStream>>> = Arc::new(Mutex::new(Vec::new()));
     if let Some(port) = start_http(Arc::clone(&state), Arc::clone(&sse)) {
         if std::env::var("LEAN_GOALVIEW_NO_OPEN").is_err() {
             let url = format!("http://127.0.0.1:{port}/");
-            let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-            let _ = Command::new(opener).arg(&url).spawn();
+            // Prefer the dedicated window (embedded webview); it looks up the
+            // binary on PATH and next to this proxy.
+            let win = std::env::var("LEAN_GOALVIEW_WINDOW")
+                .ok()
+                .or_else(|| which_sibling("lean-goalview-window"));
+            let spawned = win
+                .map(|w| Command::new(w).arg(&url).spawn().is_ok())
+                .unwrap_or(false);
+            if !spawned {
+                let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+                let _ = Command::new(opener).arg(&url).spawn();
+            }
         }
     }
 
