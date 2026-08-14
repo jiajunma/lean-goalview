@@ -117,17 +117,17 @@ fn parse_goal(block: &str) -> Vec<Var> {
         if trimmed.is_empty() {
             continue;
         }
-        if let Some(case) = trimmed.strip_prefix("case ") {
-            out.push(Var { name: "case".into(), value: case.to_string(), reference: 0 });
-        } else if let Some(goal) = trimmed.strip_prefix("⊢") {
-            out.push(Var { name: "⊢".into(), value: goal.trim().to_string(), reference: 0 });
+        // Everything goes in `name` with an empty `value`: Zed renders values
+        // as "= value", and "ih = n + b = b + n" is nonsense notation — the
+        // hypothesis IS "ih : n + b = b + n".
+        if trimmed.starts_with("case ") || trimmed.starts_with("⊢") {
+            out.push(Var { name: trimmed.to_string(), value: String::new(), reference: 0 });
         } else if !line.starts_with(' ') && trimmed.contains(" : ") {
-            let (names, ty) = trimmed.split_once(" : ").unwrap();
-            out.push(Var { name: names.to_string(), value: ty.to_string(), reference: 0 });
+            out.push(Var { name: trimmed.to_string(), value: String::new(), reference: 0 });
         } else if let Some(last) = out.last_mut() {
-            // Wrapped continuation of the previous hypothesis/goal line.
-            last.value.push(' ');
-            last.value.push_str(trimmed.trim_start());
+            // Wrapped continuation of the previous line.
+            last.name.push(' ');
+            last.name.push_str(trimmed.trim_start());
         }
     }
     out
@@ -196,27 +196,31 @@ fn rebuild(model: &mut Model, snap: &Value) {
         } else {
             "no goals at this position"
         };
-        root.push(Var { name: "state".into(), value: label.into(), reference: 0 });
+        root.push(Var { name: label.into(), value: String::new(), reference: 0 });
     }
     for (i, g) in goals.iter().enumerate() {
         let goal_ref = 100 + i as i64;
         let children = parse_goal(g);
         let target = children
             .iter()
-            .find(|v| v.name == "⊢")
-            .map(|v| v.value.clone())
+            .find(|v| v.name.starts_with("⊢"))
+            .map(|v| single_line(&v.name))
             .unwrap_or_default();
         root.push(Var {
-            name: if goals.len() == 1 { "goal".into() } else { format!("goal {}", i + 1) },
-            value: format!("⊢ {}", single_line(&target)),
+            name: if goals.len() == 1 {
+                target.clone()
+            } else {
+                format!("{} · {target}", i + 1)
+            },
+            value: String::new(),
             reference: goal_ref,
         });
         model.vars.insert(goal_ref, children);
     }
     if let Some(t) = snap["termGoal"].as_str() {
         root.push(Var {
-            name: "expected type".into(),
-            value: single_line(t.trim_start_matches('⊢').trim()),
+            name: format!("expected : {}", single_line(t.trim_start_matches('⊢').trim())),
+            value: String::new(),
             reference: 0,
         });
     }
@@ -231,8 +235,12 @@ fn rebuild(model: &mut Model, snap: &Value) {
                 _ => "ℹ️",
             };
             msgs.push(Var {
-                name: format!("{sev} line {}", m["line"].as_u64().unwrap_or(0)),
-                value: single_line(m["text"].as_str().unwrap_or("")),
+                name: format!(
+                    "{sev} L{} {}",
+                    m["line"].as_u64().unwrap_or(0),
+                    single_line(m["text"].as_str().unwrap_or(""))
+                ),
+                value: String::new(),
                 reference: 0,
             });
         }
