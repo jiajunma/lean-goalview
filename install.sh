@@ -23,7 +23,7 @@ echo "==> building the official infoview frontend"
 echo "==> assembling $WEBUI"
 rm -rf "$WEBUI"
 mkdir -p "$WEBUI/imports"
-cp "$ROOT/webui/dist/index.html" "$ROOT/webui/dist/main.js" "$WEBUI/"
+cp "$ROOT/webui/dist/index.html" "$ROOT/webui/dist/main.js" "$ROOT/webui/dist/vscode-theme.css" "$WEBUI/"
 D="$ROOT/webui/node_modules/@leanprover/infoview/dist"
 cp "$D/index.production.min.js" \
    "$D/react.production.min.js" \

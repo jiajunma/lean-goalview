@@ -1,0 +1,65 @@
+/* The official infoview styles against VS Code's theme CSS variables, which
+ * VS Code injects into its webviews. Outside VS Code nobody defines them, so
+ * e.g. hover cards get a transparent background and bleed into the content
+ * underneath. This file supplies the full set the infoview references
+ * (VS Code Light+/Dark+ palette), switching on the system color scheme. */
+
+:root {
+  --vscode-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --vscode-font-size: 13px;
+  --vscode-font-weight: normal;
+  --vscode-editor-font-family: "JuliaMono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --vscode-editor-font-size: 13px;
+  --vscode-editor-font-weight: normal;
+  --vscode-editor-font-feature-settings: normal;
+  --vscode-editor-line-height: 1.5;
+
+  --vscode-editor-foreground: #3b3b3b;
+  --vscode-editorHoverWidget-background: #f8f8f8;
+  --vscode-editorHoverWidget-foreground: #3b3b3b;
+  --vscode-editorHoverWidget-border: #c8c8c8;
+  --vscode-widget-shadow: rgba(0, 0, 0, 0.16);
+  --vscode-textCodeBlock-background: rgba(220, 220, 220, 0.4);
+  --vscode-dropdown-background: #ffffff;
+  --vscode-dropdown-foreground: #3b3b3b;
+  --vscode-dropdown-border: #c8c8c8;
+  --vscode-editor-selectionBackground: #add6ff;
+  --vscode-editor-findMatchBackground: #a8ac94;
+  --vscode-editorOverviewRuler-rangeHighlightForeground: rgba(0, 122, 204, 0.6);
+  --vscode-diffEditor-insertedTextBackground: rgba(155, 185, 85, 0.25);
+  --vscode-diffEditor-insertedTextBorder: transparent;
+  --vscode-diffEditor-removedTextBackground: rgba(255, 0, 0, 0.2);
+  --vscode-diffEditor-removedTextBorder: transparent;
+
+  color-scheme: light dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --vscode-editor-foreground: #cccccc;
+    --vscode-editorHoverWidget-background: #252526;
+    --vscode-editorHoverWidget-foreground: #cccccc;
+    --vscode-editorHoverWidget-border: #454545;
+    --vscode-widget-shadow: rgba(0, 0, 0, 0.36);
+    --vscode-textCodeBlock-background: rgba(255, 255, 255, 0.08);
+    --vscode-dropdown-background: #3c3c3c;
+    --vscode-dropdown-foreground: #f0f0f0;
+    --vscode-dropdown-border: #3c3c3c;
+    --vscode-editor-selectionBackground: #264f78;
+    --vscode-editor-findMatchBackground: #515c6a;
+    --vscode-editorOverviewRuler-rangeHighlightForeground: rgba(0, 122, 204, 0.6);
+    --vscode-diffEditor-insertedTextBackground: rgba(155, 185, 85, 0.25);
+    --vscode-diffEditor-removedTextBackground: rgba(255, 0, 0, 0.25);
+  }
+}
+
+/* Page ground: the infoview assumes the host paints an editor-like surface. */
+html, body {
+  background: #ffffff;
+  color: var(--vscode-editor-foreground);
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+}
+@media (prefers-color-scheme: dark) {
+  html, body { background: #1e1e1e; }
+}
