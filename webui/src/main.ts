@@ -59,6 +59,7 @@ const editorApi: EditorApi = {
   // "Try this" and other suggestions call applyEdit. Forward the WorkspaceEdit
   // to the proxy, which asks the editor to apply it via workspace/applyEdit.
   async applyEdit(te) {
+    console.log('[lean-goalview] applyEdit', te)
     ws.send(JSON.stringify({ t: 'edit', edit: te }))
   },
   async showDocument() {},

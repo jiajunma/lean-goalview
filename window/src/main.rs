@@ -56,6 +56,9 @@ fn main() -> wry::Result<()> {
 
     let _webview = WebViewBuilder::new()
         .with_url(&url)
+        // Right-click → Inspect Element opens the console (for diagnosing
+        // infoview/widget issues).
+        .with_devtools(true)
         .with_ipc_handler(move |req| match req.body().as_str() {
             "toggle-float" => {
                 let _ = proxy.send_event(UserEvent::ToggleFloat);
