@@ -26,10 +26,12 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tungstenite::{handshake::derive_accept_key, protocol::Role, Message, WebSocket};
 
 // ---------------------------------------------------------------- framing --
 
@@ -81,6 +83,10 @@ struct State {
     /// Editor hover request ids awaiting a server response we'll enrich.
     pending_hovers: HashSet<u64>,
     next_id: u64,
+    /// The editor's `initialize` request id, and lake serve's result for it —
+    /// forwarded to the infoview as its `serverRestarted` payload.
+    init_id: Option<Value>,
+    init_result: Option<Value>,
 }
 
 /// The cached goal state as hover markdown, or None if there's nothing to add.
@@ -367,12 +373,120 @@ ev.onmessage=e=>{try{render(JSON.parse(e.data))}catch(x){}};
 ev.onerror=()=>{B.textContent='⚠ disconnected';};
 </script></body></html>"####;
 
-/// Minimal HTTP server: `GET /` serves the page, `GET /events` is an SSE
-/// stream registered for goal broadcasts. Returns the bound port.
-fn start_http(state: Arc<Mutex<State>>, sse: Arc<Mutex<Vec<TcpStream>>>) -> Option<u16> {
-    // Try a small range so two projects don't fight over one port.
-    let listener = (6237u16..6247)
-        .find_map(|p| TcpListener::bind(("127.0.0.1", p)).ok())?;
+/// Shared plumbing for the WebSocket bridge that connects the official
+/// infoview to `lake serve`.
+#[derive(Clone)]
+struct WsHub {
+    /// Outboxes for connected infoview clients (cursor / notification pushes).
+    clients: Arc<Mutex<Vec<Sender<String>>>>,
+    /// LSP request id (`iv:N`) -> (that client's outbox, the client's own seq).
+    pending: Arc<Mutex<HashMap<String, (Sender<String>, u64)>>>,
+    counter: Arc<AtomicU64>,
+    /// To forward infoview-originated LSP requests down to lake serve.
+    child_stdin: Arc<Mutex<ChildStdin>>,
+}
+
+fn content_type(path: &str) -> &'static str {
+    match path.rsplit('.').next() {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("ttf") => "font/ttf",
+        Some("svg") => "image/svg+xml",
+        Some("json") => "application/json",
+        _ => "application/octet-stream",
+    }
+}
+
+/// A `Location` (LSP: uri + zero-width range at the cursor) for the infoview.
+fn cursor_location(state: &State) -> Value {
+    match &state.cursor {
+        Some((uri, l, c)) => json!({
+            "uri": uri,
+            "range": {"start": {"line": l, "character": c}, "end": {"line": l, "character": c}}
+        }),
+        None => Value::Null,
+    }
+}
+
+/// Handle one message from the infoview, relaying LSP requests/notifications
+/// to lake serve. `tx` is this client's outbox (for routing the response back).
+fn handle_ws_message(text: &str, hub: &WsHub, tx: &Sender<String>) {
+    let Ok(m) = serde_json::from_str::<Value>(text) else { return };
+    match m["t"].as_str() {
+        Some("req") => {
+            let seq = m["seq"].as_u64().unwrap_or(0);
+            let n = hub.counter.fetch_add(1, Ordering::Relaxed);
+            let id = format!("iv:{n}");
+            hub.pending.lock().unwrap().insert(id.clone(), (tx.clone(), seq));
+            let req = json!({
+                "jsonrpc": "2.0", "id": id,
+                "method": m["method"], "params": m["params"],
+            });
+            write_frame(&mut *hub.child_stdin.lock().unwrap(), req.to_string().as_bytes());
+        }
+        Some("not") => {
+            let req = json!({
+                "jsonrpc": "2.0", "method": m["method"], "params": m["params"],
+            });
+            write_frame(&mut *hub.child_stdin.lock().unwrap(), req.to_string().as_bytes());
+        }
+        _ => {} // sub/unsub: the frontend filters, nothing to track here
+    }
+}
+
+/// Run one upgraded infoview WebSocket connection until it closes.
+fn serve_ws(stream: TcpStream, state: Arc<Mutex<State>>, hub: WsHub) {
+    let _ = stream.set_nonblocking(true);
+    let mut ws = WebSocket::from_raw_socket(stream, Role::Server, None);
+    let (tx, rx): (Sender<String>, Receiver<String>) = channel();
+    hub.clients.lock().unwrap().push(tx.clone());
+
+    // Greet with the server's initialize result and the current cursor.
+    {
+        let st = state.lock().unwrap();
+        let hello = json!({
+            "t": "hello",
+            "initResult": st.init_result.clone().unwrap_or(Value::Null),
+            "loc": cursor_location(&st),
+        });
+        let _ = ws.send(Message::text(hello.to_string()));
+    }
+
+    loop {
+        // Drain outbox (cursor moves, notifications, request responses).
+        let mut wrote = false;
+        while let Ok(msg) = rx.try_recv() {
+            if ws.write(Message::text(msg)).is_err() {
+                return;
+            }
+            wrote = true;
+        }
+        if wrote {
+            let _ = ws.flush();
+        }
+        // Read one inbound message if available (nonblocking).
+        match ws.read() {
+            Ok(Message::Text(t)) => handle_ws_message(&t, &hub, &tx),
+            Ok(Message::Close(_)) => return,
+            Ok(_) => {}
+            Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(_) => return,
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+}
+
+/// HTTP + WebSocket server. `GET /ws` upgrades to the infoview bridge; every
+/// other path serves a static file from `webui_dir` (the built infoview).
+/// Returns the bound port.
+fn start_http(
+    state: Arc<Mutex<State>>,
+    sse: Arc<Mutex<Vec<TcpStream>>>,
+    webui_dir: String,
+    hub: WsHub,
+) -> Option<u16> {
+    let listener = (6237u16..6247).find_map(|p| TcpListener::bind(("127.0.0.1", p)).ok())?;
     let port = listener.local_addr().ok()?.port();
     std::thread::spawn(move || {
         for conn in listener.incoming().flatten() {
@@ -385,15 +499,36 @@ fn start_http(state: Arc<Mutex<State>>, sse: Arc<Mutex<Vec<TcpStream>>>) -> Opti
             if reader.read_line(&mut req).is_err() {
                 continue;
             }
-            // Drain the rest of the request headers.
+            // Read headers, keeping the WebSocket key if present.
+            let mut ws_key = String::new();
             let mut h = String::new();
             while reader.read_line(&mut h).map(|n| n > 0).unwrap_or(false) {
                 if h == "\r\n" {
                     break;
                 }
+                if let Some(v) = h.strip_prefix("Sec-WebSocket-Key:") {
+                    ws_key = v.trim().to_string();
+                }
                 h.clear();
             }
-            if req.starts_with("GET /events") {
+
+            let path = req.split_whitespace().nth(1).unwrap_or("/");
+
+            if path == "/ws" && !ws_key.is_empty() {
+                // Complete the handshake by hand (we already consumed the
+                // request), then hand the socket to tungstenite for framing.
+                let accept = derive_accept_key(ws_key.as_bytes());
+                let resp = format!(
+                    "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n\
+                     Connection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+                );
+                if stream.write_all(resp.as_bytes()).is_err() {
+                    continue;
+                }
+                let state = Arc::clone(&state);
+                let hub = hub.clone();
+                std::thread::spawn(move || serve_ws(stream, state, hub));
+            } else if path == "/events" {
                 let hdr = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
                            Cache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n";
                 if stream.write_all(hdr.as_bytes()).is_err() {
@@ -402,18 +537,30 @@ fn start_http(state: Arc<Mutex<State>>, sse: Arc<Mutex<Vec<TcpStream>>>) -> Opti
                 let snap = goal_json(&state.lock().unwrap());
                 let _ = stream.write_all(format!("data: {snap}\n\n").as_bytes());
                 let _ = stream.flush();
-                sse.lock().unwrap().push(stream); // main loop pushes updates
-            } else if req.starts_with("GET / ") || req.starts_with("GET /index") {
-                let body = PAGE.as_bytes();
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\
-                     Content-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                let _ = stream.write_all(resp.as_bytes());
-                let _ = stream.write_all(body);
+                sse.lock().unwrap().push(stream);
             } else {
-                let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+                // Static file from webui_dir. Strip query, map / to index.html,
+                // and refuse path traversal.
+                let clean = path.split('?').next().unwrap_or("/");
+                let rel = if clean == "/" { "index.html" } else { clean.trim_start_matches('/') };
+                let full = std::path::Path::new(&webui_dir).join(rel);
+                let ok = full.starts_with(&webui_dir) && !rel.contains("..");
+                match ok.then(|| std::fs::read(&full).ok()).flatten() {
+                    Some(body) => {
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
+                             Connection: close\r\n\r\n",
+                            content_type(rel),
+                            body.len()
+                        );
+                        let _ = stream.write_all(resp.as_bytes());
+                        let _ = stream.write_all(&body);
+                    }
+                    None => {
+                        let _ =
+                            stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+                    }
+                }
             }
         }
     });
@@ -463,6 +610,13 @@ fn main() {
     let child_stdin = Arc::new(Mutex::new(child.stdin.take().unwrap()));
     let child_stdout = child.stdout.take().unwrap();
 
+    // WebSocket bridge state, shared between thread B (routes responses,
+    // broadcasts notifications) and the HTTP server (serves each client).
+    let ws_clients: Arc<Mutex<Vec<Sender<String>>>> = Arc::new(Mutex::new(Vec::new()));
+    let ws_pending: Arc<Mutex<HashMap<String, (Sender<String>, u64)>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let ws_counter = Arc::new(AtomicU64::new(0));
+
     // Debounced fetch scheduling: worker fetches goals ~120ms after the last
     // cursor event, so scrolling through a file doesn't spam the server.
     let (tick_tx, tick_rx): (Sender<()>, Receiver<()>) = channel();
@@ -488,6 +642,7 @@ fn main() {
                                 .unwrap_or("")
                                 .to_string();
                             let mut st = state.lock().unwrap();
+                            st.init_id = Some(msg["id"].clone());
                             st.out_path = Some(
                                 std::env::var("LEAN_GOALVIEW_FILE").unwrap_or_else(|_| {
                                     format!(
@@ -546,6 +701,8 @@ fn main() {
     {
         let state = Arc::clone(&state);
         let tick_tx = tick_tx.clone();
+        let ws_clients = Arc::clone(&ws_clients);
+        let ws_pending = Arc::clone(&ws_pending);
         std::thread::spawn(move || {
             let mut reader = BufReader::new(child_stdout);
             let stdout = std::io::stdout();
@@ -557,6 +714,39 @@ fn main() {
                         continue;
                     }
                 };
+
+                // The editor's initialize result is the infoview's
+                // `serverRestarted` payload. Capture it and push to any
+                // connected infoview, then let it flow on to the editor.
+                if !msg["id"].is_null() {
+                    let mut st = state.lock().unwrap();
+                    if st.init_id.as_ref() == Some(&msg["id"]) && !msg["result"].is_null() {
+                        st.init_result = Some(msg["result"].clone());
+                        let restart =
+                            json!({"t": "restart", "initResult": msg["result"]}).to_string();
+                        drop(st);
+                        ws_clients
+                            .lock()
+                            .unwrap()
+                            .retain(|tx| tx.send(restart.clone()).is_ok());
+                    }
+                }
+
+                // Response to an infoview-originated request? Route it back to
+                // that client as `{t:res}` and don't forward to the editor.
+                if let Some(id) = msg["id"].as_str() {
+                    if id.starts_with("iv:") {
+                        if let Some((tx, seq)) = ws_pending.lock().unwrap().remove(id) {
+                            let out = if !msg["error"].is_null() {
+                                json!({"t": "res", "seq": seq, "error": msg["error"]})
+                            } else {
+                                json!({"t": "res", "seq": seq, "result": msg["result"]})
+                            };
+                            let _ = tx.send(out.to_string());
+                        }
+                        continue;
+                    }
+                }
 
                 // Response to an editor hover we flagged? Enrich it with the
                 // goal, then forward under the editor's original id.
@@ -628,6 +818,15 @@ fn main() {
                     _ => {}
                 }
 
+                // Mirror every server→client notification to the infoview; the
+                // frontend keeps only the methods it subscribed to.
+                if !method.is_empty() && msg["id"].is_null() {
+                    let note =
+                        json!({"t": "srvNot", "method": method, "params": msg["params"]})
+                            .to_string();
+                    ws_clients.lock().unwrap().retain(|tx| tx.send(note.clone()).is_ok());
+                }
+
                 write_frame(&mut stdout.lock(), &body);
             }
             std::process::exit(0);
@@ -665,7 +864,19 @@ fn main() {
     // embedded WebKit webview renders the page. Falls back to the default
     // browser if the window binary isn't installed.
     let sse: Arc<Mutex<Vec<TcpStream>>> = Arc::new(Mutex::new(Vec::new()));
-    if let Some(port) = start_http(Arc::clone(&state), Arc::clone(&sse)) {
+    let hub = WsHub {
+        clients: Arc::clone(&ws_clients),
+        pending: Arc::clone(&ws_pending),
+        counter: Arc::clone(&ws_counter),
+        child_stdin: Arc::clone(&child_stdin),
+    };
+    let webui_dir = std::env::var("LEAN_GOALVIEW_WEBUI").unwrap_or_else(|_| {
+        format!(
+            "{}/.local/share/lean-goalview/webui",
+            std::env::var("HOME").unwrap_or_default()
+        )
+    });
+    if let Some(port) = start_http(Arc::clone(&state), Arc::clone(&sse), webui_dir, hub) {
         if std::env::var("LEAN_GOALVIEW_NO_OPEN").is_err() {
             let url = format!("http://127.0.0.1:{port}/");
             // Prefer the dedicated window (embedded webview); it looks up the
@@ -728,11 +939,17 @@ fn main() {
             let st = state.lock().unwrap();
             write_out(&st, &mut last_written);
             let json = goal_json(&st);
+            let loc = cursor_location(&st);
             drop(st);
             if json != last_broadcast {
                 last_broadcast = json.clone();
                 broadcast(&clients, &json);
                 broadcast_sse(&sse, &json);
+                // Drive the official infoview: cursor moved.
+                if !loc.is_null() {
+                    let cur = json!({"t": "cursor", "loc": loc}).to_string();
+                    ws_clients.lock().unwrap().retain(|tx| tx.send(cur.clone()).is_ok());
+                }
             }
         }
     }

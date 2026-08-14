@@ -1,0 +1,12 @@
+{
+  "name": "lean-goalview-webui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": { "build": "vite build" },
+  "dependencies": {
+    "@leanprover/infoview": "^0.13.0",
+    "@leanprover/infoview-api": "^0.13.0"
+  },
+  "devDependencies": { "vite": "^5.4.0", "typescript": "^5.5.0" }
+}

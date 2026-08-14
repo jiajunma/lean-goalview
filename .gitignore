@@ -1,2 +1,4 @@
 target/
 .goalview.md
+webui/node_modules/
+webui/dist/
