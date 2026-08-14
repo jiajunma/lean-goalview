@@ -431,6 +431,19 @@ fn handle_ws_message(text: &str, hub: &WsHub, tx: &Sender<String>) {
             });
             write_frame(&mut *hub.child_stdin.lock().unwrap(), req.to_string().as_bytes());
         }
+        Some("edit") => {
+            // A "Try this"/suggestion edit: ask the EDITOR (not lake serve) to
+            // apply it via a server→client workspace/applyEdit request. The
+            // editor's response carries our `iv-edit:` id and is dropped in the
+            // editor→server thread.
+            let n = hub.counter.fetch_add(1, Ordering::Relaxed);
+            let req = json!({
+                "jsonrpc": "2.0", "id": format!("iv-edit:{n}"),
+                "method": "workspace/applyEdit",
+                "params": {"edit": m["edit"]},
+            });
+            write_frame(&mut std::io::stdout().lock(), req.to_string().as_bytes());
+        }
         _ => {} // sub/unsub: the frontend filters, nothing to track here
     }
 }
@@ -631,6 +644,15 @@ fn main() {
             let mut reader = BufReader::new(stdin.lock());
             while let Some(body) = read_frame(&mut reader) {
                 if let Ok(msg) = serde_json::from_slice::<Value>(&body) {
+                    // The editor's response to a workspace/applyEdit we sent on
+                    // the infoview's behalf: consume it, don't confuse lake serve.
+                    if msg["method"].is_null() {
+                        if let Some(id) = msg["id"].as_str() {
+                            if id.starts_with("iv-edit:") {
+                                continue;
+                            }
+                        }
+                    }
                     let method = msg["method"].as_str().unwrap_or("");
                     match method {
                         "initialize" => {

@@ -56,7 +56,11 @@ const editorApi: EditorApi = {
     try { await navigator.clipboard.writeText(text) } catch {}
   },
   async insertText() {},
-  async applyEdit() {},
+  // "Try this" and other suggestions call applyEdit. Forward the WorkspaceEdit
+  // to the proxy, which asks the editor to apply it via workspace/applyEdit.
+  async applyEdit(te) {
+    ws.send(JSON.stringify({ t: 'edit', edit: te }))
+  },
   async showDocument() {},
   async restartFile() {},
   createRpcSession: async (uri) => (await request(uri, '$/lean/rpc/connect', { uri })).sessionId,
