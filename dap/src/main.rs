@@ -133,6 +133,51 @@ fn parse_goal(block: &str) -> Vec<Var> {
     out
 }
 
+/// Render the goal state as a multi-line console block, in Lean's own
+/// pretty-printed layout (the variables tree flattens it; this doesn't).
+fn console_block(snap: &Value) -> String {
+    let file = snap["file"].as_str().unwrap_or("");
+    let line = snap["line"].as_i64().unwrap_or(0);
+    let mut out = String::new();
+    out.push_str(&format!("\n───────── {file}:{line} ─────────\n"));
+    let goals: Vec<&str> = snap["goals"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|g| g.as_str()).collect())
+        .unwrap_or_default();
+    if goals.is_empty() {
+        if snap["busy"].as_bool().unwrap_or(false) {
+            out.push_str("⏳ elaborating…\n");
+        } else {
+            out.push_str("no goals\n");
+        }
+    }
+    for (i, g) in goals.iter().enumerate() {
+        if goals.len() > 1 {
+            out.push_str(&format!("— goal {} / {} —\n", i + 1, goals.len()));
+        }
+        out.push_str(g);
+        out.push('\n');
+    }
+    if let Some(t) = snap["termGoal"].as_str() {
+        out.push_str(&format!("expected: {t}\n"));
+    }
+    if let Some(list) = snap["messages"].as_array() {
+        for m in list {
+            let sev = match m["severity"].as_u64().unwrap_or(3) {
+                1 => "error",
+                2 => "warn",
+                _ => "info",
+            };
+            out.push_str(&format!(
+                "[{sev} L{}] {}\n",
+                m["line"].as_u64().unwrap_or(0),
+                m["text"].as_str().unwrap_or("")
+            ));
+        }
+    }
+    out
+}
+
 fn rebuild(model: &mut Model, snap: &Value) {
     model.vars.clear();
     model.file = snap["file"].as_str().unwrap_or("").to_string();
@@ -213,6 +258,7 @@ fn main() {
                 "{}/lean-goalview.sock",
                 std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into()).trim_end_matches('/')
             );
+            let mut last_key = String::new();
             loop {
                 if let Ok(stream) = UnixStream::connect(&sock_path) {
                     dlog("socket: connected to proxy");
@@ -225,7 +271,25 @@ fn main() {
                             Ok(_) => {
                                 if let Ok(snap) = serde_json::from_str::<Value>(&line) {
                                     rebuild(&mut model.lock().unwrap(), &snap);
+                                    // Print to the debug console only when the
+                                    // goal content changes, not on every cursor
+                                    // line move.
+                                    let key = format!(
+                                        "{}{}{}",
+                                        snap["goals"], snap["termGoal"], snap["messages"]
+                                    );
+                                    let content_changed = key != last_key;
+                                    last_key = key;
                                     if configured.load(Ordering::Relaxed) {
+                                        if content_changed {
+                                            event(
+                                                "output",
+                                                json!({
+                                                    "category": "console",
+                                                    "output": console_block(&snap),
+                                                }),
+                                            );
+                                        }
                                         event(
                                             "stopped",
                                             json!({

@@ -646,7 +646,110 @@ fn lake_command() -> Command {
     c
 }
 
+
+/// `lean-goalview --watch`: a terminal goal view. Connects to the proxy's
+/// socket and redraws the current goal state on every update — Lean's own
+/// pretty-printed layout, ANSI-colored, no scrollback buildup. Run it in the
+/// editor's terminal panel.
+fn watch_mode() -> ! {
+    let sock_path = format!(
+        "{}/lean-goalview.sock",
+        std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into()).trim_end_matches('/')
+    );
+    let paint = |snap: &Value| {
+        // Clear screen + home.
+        print!("\x1b[2J\x1b[H");
+        let file = snap["file"].as_str().unwrap_or("");
+        let line = snap["line"].as_i64().unwrap_or(0);
+        if file.is_empty() {
+            println!("\x1b[2mLean goals — waiting for the cursor…\x1b[0m");
+        } else {
+            println!("\x1b[1m{file}:{line}\x1b[0m");
+        }
+        println!();
+        let goals: Vec<&str> = snap["goals"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|g| g.as_str()).collect())
+            .unwrap_or_default();
+        if goals.is_empty() {
+            if snap["busy"].as_bool().unwrap_or(false) {
+                println!("\x1b[33m⏳ elaborating…\x1b[0m");
+            } else if !file.is_empty() {
+                println!("\x1b[2mno goals at this position\x1b[0m");
+            }
+        }
+        for (i, g) in goals.iter().enumerate() {
+            if goals.len() > 1 {
+                println!("\x1b[2m— goal {} / {} —\x1b[0m", i + 1, goals.len());
+            }
+            for l in g.lines() {
+                if let Some(rest) = l.strip_prefix("⊢") {
+                    println!("\x1b[1;32m⊢\x1b[0m\x1b[1m{rest}\x1b[0m");
+                } else if l.starts_with("case ") {
+                    println!("\x1b[36m{l}\x1b[0m");
+                } else if let Some((names, ty)) = l.split_once(" : ") {
+                    if !l.starts_with(' ') {
+                        println!("\x1b[34m{names}\x1b[0m : {ty}");
+                    } else {
+                        println!("{l}");
+                    }
+                } else {
+                    println!("{l}");
+                }
+            }
+            println!();
+        }
+        if let Some(t) = snap["termGoal"].as_str() {
+            println!("\x1b[2mexpected:\x1b[0m {t}");
+        }
+        if let Some(list) = snap["messages"].as_array() {
+            if !list.is_empty() {
+                println!();
+            }
+            for m in list {
+                let (color, tag) = match m["severity"].as_u64().unwrap_or(3) {
+                    1 => ("31", "error"),
+                    2 => ("33", "warn"),
+                    _ => ("2", "info"),
+                };
+                println!(
+                    "\x1b[{color}m[{tag} L{}]\x1b[0m {}",
+                    m["line"].as_u64().unwrap_or(0),
+                    m["text"].as_str().unwrap_or("")
+                );
+            }
+        }
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
+    };
+
+    println!("\x1b[2mconnecting to lean-goalview…\x1b[0m");
+    loop {
+        if let Ok(stream) = UnixStream::connect(&sock_path) {
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        if let Ok(snap) = serde_json::from_str::<Value>(&line) {
+                            paint(&snap);
+                        }
+                    }
+                }
+            }
+            print!("\x1b[2J\x1b[H");
+            println!("\x1b[2mproxy gone — reconnecting…\x1b[0m");
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+}
+
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--watch") {
+        watch_mode();
+    }
     let mut child: Child = lake_command()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
