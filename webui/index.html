@@ -38,20 +38,30 @@
     </div>
     <div id="infoview"><div class="gv-status">Connecting to Lean…</div></div>
     <script>
-      // The control bar talks to the native window over wry IPC. In a plain
-      // browser window.ipc is absent, so the buttons simply no-op there.
-      const ipc = (m) => window.ipc && window.ipc.postMessage(m)
-      window.addEventListener('DOMContentLoaded', () => {
-        const pin = document.getElementById('pin')
-        let floating = true
-        pin.onclick = () => {
-          floating = !floating
-          pin.classList.toggle('off', !floating)
-          pin.textContent = floating ? '📌 Float' : '📍 Behind'
-          ipc('toggle-float')
+      // The control bar talks to the native window over wry IPC. Everything
+      // lives in an IIFE: wry's own injected script declares a lexical `ipc`
+      // in the global scope, and a top-level `const ipc` here collided with
+      // it — a SyntaxError that silently killed this whole script block
+      // (dead buttons). Block scope, and no global names of our own.
+      (() => {
+        const send = (m) => window.ipc && window.ipc.postMessage(m)
+        const wire = () => {
+          const pin = document.getElementById('pin')
+          let floating = true
+          pin.onclick = () => {
+            floating = !floating
+            pin.classList.toggle('off', !floating)
+            pin.textContent = floating ? '📌 Float' : '📍 Behind'
+            send('toggle-float')
+          }
+          document.getElementById('min').onclick = () => send('minimize')
         }
-        document.getElementById('min').onclick = () => ipc('minimize')
-      })
+        if (document.readyState === 'loading') {
+          window.addEventListener('DOMContentLoaded', wire)
+        } else {
+          wire()
+        }
+      })()
     </script>
     <script type="module" src="/src/main.ts"></script>
   </body>

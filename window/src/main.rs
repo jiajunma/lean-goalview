@@ -15,12 +15,14 @@ use tao::{
     keyboard::{Key, ModifiersState},
     window::WindowBuilder,
 };
+use std::time::Duration;
 use wry::WebViewBuilder;
 
 #[derive(Debug)]
 enum UserEvent {
     ToggleFloat,
     Minimize,
+    SelfTest,
 }
 
 /// Saved window frame (physical px), so the window reopens exactly where the
@@ -36,6 +38,15 @@ fn load_frame() -> Option<(i32, i32, u32, u32)> {
     let (x, y) = (v["x"].as_i64()? as i32, v["y"].as_i64()? as i32);
     let (w, h) = (v["w"].as_u64()? as u32, v["h"].as_u64()? as u32);
     (w >= 200 && h >= 200).then_some((x, y, w, h))
+}
+
+fn wlog(msg: &str) {
+    let tmp = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into());
+    let path = format!("{}/lean-goalview-window.log", tmp.trim_end_matches('/'));
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        use std::io::Write as _;
+        let _ = writeln!(f, "{msg}");
+    }
 }
 
 fn save_frame(x: i32, y: i32, w: u32, h: u32) {
@@ -98,7 +109,7 @@ fn main() -> wry::Result<()> {
         .build(&event_loop)
         .expect("failed to build window");
 
-    let _webview = WebViewBuilder::new()
+    let webview = WebViewBuilder::new()
         .with_url(&url)
         // Without this, macOS swallows the first click on a non-key window
         // (which an always-on-top helper usually is) just to focus it, so
@@ -107,16 +118,34 @@ fn main() -> wry::Result<()> {
         // Right-click → Inspect Element opens the console (for diagnosing
         // infoview/widget issues).
         .with_devtools(true)
-        .with_ipc_handler(move |req| match req.body().as_str() {
-            "toggle-float" => {
-                let _ = proxy.send_event(UserEvent::ToggleFloat);
+        .with_ipc_handler(move |req| {
+            wlog(&format!("ipc: {}", req.body()));
+            match req.body().as_str() {
+                "toggle-float" => {
+                    let _ = proxy.send_event(UserEvent::ToggleFloat);
+                }
+                "minimize" => {
+                    let _ = proxy.send_event(UserEvent::Minimize);
+                }
+                _ => {}
             }
-            "minimize" => {
-                let _ = proxy.send_event(UserEvent::Minimize);
-            }
-            _ => {}
         })
         .build(&window)?;
+    let _webview = webview;
+
+    if std::env::var("LEAN_GOALVIEW_WINDOW_SELFTEST").is_ok() {
+        // Fire the simulated click from inside the running event loop, after
+        // the page has had time to load; exit shortly after.
+        wlog("selftest: armed");
+        let p2 = event_loop.create_proxy();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(3000));
+            let _ = p2.send_event(UserEvent::SelfTest);
+            std::thread::sleep(Duration::from_millis(3000));
+            wlog("selftest: exiting");
+            std::process::exit(0);
+        });
+    }
 
     let persist = |window: &tao::window::Window| {
         if let (Ok(pos), size) = (window.outer_position(), window.inner_size()) {
@@ -131,9 +160,17 @@ fn main() -> wry::Result<()> {
         match event {
             Event::UserEvent(UserEvent::ToggleFloat) => {
                 on_top = !on_top;
+                wlog(&format!("native: set_always_on_top({on_top})"));
                 window.set_always_on_top(on_top);
             }
             Event::UserEvent(UserEvent::Minimize) => window.set_minimized(true),
+            Event::UserEvent(UserEvent::SelfTest) => {
+                wlog("selftest: evaluating click");
+                let _ = _webview.evaluate_script(
+                    "document.getElementById('pin').click();\
+                     window.ipc.postMessage('log:clicked');",
+                );
+            }
             Event::WindowEvent { event, .. } => match event {
                 WindowEvent::CloseRequested => {
                     persist(&window);
