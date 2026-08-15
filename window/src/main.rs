@@ -23,6 +23,8 @@ enum UserEvent {
     ToggleFloat,
     Minimize,
     SelfTest,
+    /// Another launch asked us to come to the front (single-instance summon).
+    Summon,
 }
 
 /// Saved window frame (physical px), so the window reopens exactly where the
@@ -74,8 +76,28 @@ fn resolve_url() -> String {
     format!("http://127.0.0.1:{port}/")
 }
 
+fn control_sock_path() -> String {
+    let tmp = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".into());
+    format!("{}/lean-goalview-window.sock", tmp.trim_end_matches('/'))
+}
+
 fn main() -> wry::Result<()> {
     let url = resolve_url();
+
+    // Single instance: if a window is already running, summon it instead of
+    // opening a second one — this is how a window sent behind the editor (or
+    // hidden with ⌘W) is recovered: just hit the open-infoview key again.
+    {
+        use std::os::unix::net::UnixStream as CtlStream;
+        let sock = control_sock_path();
+        if let Ok(mut c) = CtlStream::connect(&sock) {
+            use std::io::Write as _;
+            if c.write_all(b"show\n").is_ok() {
+                return Ok(());
+            }
+        }
+        let _ = std::fs::remove_file(&sock);
+    }
 
     let event_loop = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
@@ -133,6 +155,24 @@ fn main() -> wry::Result<()> {
         .build(&window)?;
     let _webview = webview;
 
+    {
+        use std::os::unix::net::UnixListener as CtlListener;
+        let p3 = event_loop.create_proxy();
+        if let Ok(listener) = CtlListener::bind(control_sock_path()) {
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let mut reader = std::io::BufReader::new(stream);
+                    let mut line = String::new();
+                    use std::io::BufRead as _;
+                    if reader.read_line(&mut line).is_ok() && line.trim() == "show" {
+                        wlog("summon requested");
+                        let _ = p3.send_event(UserEvent::Summon);
+                    }
+                }
+            });
+        }
+    }
+
     if std::env::var("LEAN_GOALVIEW_WINDOW_SELFTEST").is_ok() {
         // Fire the simulated click from inside the running event loop, after
         // the page has had time to load; exit shortly after.
@@ -164,6 +204,11 @@ fn main() -> wry::Result<()> {
                 window.set_always_on_top(on_top);
             }
             Event::UserEvent(UserEvent::Minimize) => window.set_minimized(true),
+            Event::UserEvent(UserEvent::Summon) => {
+                window.set_visible(true);
+                window.set_minimized(false);
+                window.set_focus(); // raises above the editor without changing float state
+            }
             Event::UserEvent(UserEvent::SelfTest) => {
                 wlog("selftest: evaluating click");
                 let _ = _webview.evaluate_script(
