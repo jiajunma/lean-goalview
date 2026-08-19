@@ -166,6 +166,14 @@ fn code_block(out: &mut String, body: &str) {
     out.push('\n');
 }
 
+/// Reminder printed on every surface that stays visible while the infoview
+/// window is closed — the window is the one thing you cannot be reminded by
+/// once you have hidden it. Keys match the bindings the README recommends;
+/// the command-palette route works whatever they are bound to.
+const SHORTCUTS: &str =
+    "`⌘⌥I` infoview window · `⌘⌥L` goals in terminal · \
+or ⌘⇧P → “task: spawn” → “Lean: …”";
+
 fn render(state: &State) -> String {
     let mut out = String::new();
     let (uri, line) = match &state.cursor {
@@ -175,6 +183,7 @@ fn render(state: &State) -> String {
 
     if uri.is_empty() {
         out.push_str("# Lean Goal View\n\n*Move the cursor into a Lean file…*\n");
+        out.push_str(&format!("\n---\n\n{SHORTCUTS}\n"));
         return out;
     }
 
@@ -237,6 +246,7 @@ fn render(state: &State) -> String {
         }
     }
 
+    out.push_str(&format!("\n---\n\n{SHORTCUTS}\n"));
     out
 }
 
@@ -746,6 +756,9 @@ fn watch_mode() -> ! {
     let paint = |snap: &Value| {
         // Clear screen + home.
         print!("\x1b[2J\x1b[H");
+        // One dim line, always on top: this pane stays readable while the
+        // infoview window is hidden, so it is where the keys belong.
+        println!("\x1b[2m⌘⌥I infoview window · ⌘⌥L this pane\x1b[0m");
         let file = snap["file"].as_str().unwrap_or("");
         let line = snap["line"].as_i64().unwrap_or(0);
         if file.is_empty() {

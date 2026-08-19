@@ -17,6 +17,11 @@
         user-select: none;
       }
       #bar .ttl { color: #888; font-weight: 600; }
+      #bar .key {
+        color: #999; font-weight: 500; opacity: .8;
+        border: 1px solid rgba(128,128,128,.28); border-radius: 4px;
+        padding: 0 5px; margin-left: 6px; font-size: 11px;
+      }
       #bar .sp { flex: 1; }
       #bar button {
         border: 1px solid rgba(128,128,128,.3); background: transparent;
@@ -32,6 +37,7 @@
   <body>
     <div id="bar">
       <span class="ttl">Lean Infoview</span>
+      <span class="key" title="Reopen or summon this window from Zed">⌘⌥I</span>
       <span class="sp"></span>
       <button id="pin" title="Float on top / send behind (⌘T)">📌 Float</button>
       <button id="min" title="Minimize">—</button>

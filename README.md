@@ -42,6 +42,27 @@ Lean language server at the proxy in `settings.json`:
 
 Open a `.lean` file in Zed — the infoview window opens on its own.
 
+### Reopening it
+
+Hiding the window (`⌘W`, `Esc`, or the Behind button) does not kill it; the
+next launch summons the existing one rather than opening a second. Bind that
+to a key, and a terminal goal pane alongside it, in `keymap.json`:
+
+```json
+{
+  "context": "Editor && extension == lean",
+  "bindings": {
+    "cmd-alt-i": ["task::Spawn", { "task_name": "Lean: infoview window (⌘⌥I)" }],
+    "cmd-alt-l": ["task::Spawn", { "task_name": "Lean: goals in terminal (⌘⌥L)" }]
+  }
+}
+```
+
+These two keys are the ones printed in the window title, in the terminal
+pane's header, and at the foot of `.goalview.md` — the surfaces that stay
+visible once the window is hidden. Whatever you bind them to, the tasks are
+always reachable from `⌘⇧P` → *task: spawn*.
+
 ## How it works
 
 The proxy is transparent between the editor and `lake serve`. It also:

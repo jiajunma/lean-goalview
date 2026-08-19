@@ -121,7 +121,10 @@ fn main() -> wry::Result<()> {
     let (x, y, w, h) = saved.or(default_frame).unwrap_or((100, 100, 460, 720));
 
     let window = WindowBuilder::new()
-        .with_title("Lean Infoview")
+        // The key is in the title on purpose: a hidden window still shows its
+        // title in ⌘-Tab and Mission Control, which is exactly when you need
+        // to be told how to get it back.
+        .with_title("Lean Infoview — ⌘⌥I to summon")
         // Freely resizable (tao's default); floor so it can't be shrunk away.
         .with_inner_size(PhysicalSize::new(w, h))
         .with_position(PhysicalPosition::new(x, y))
