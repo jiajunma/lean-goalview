@@ -60,6 +60,31 @@ The proxy is transparent between the editor and `lake serve`. It also:
 |---|---|---|
 | `LEAN_GOALVIEW_FILE` | `<workspace>/.goalview.md` | Output path |
 | `LEAN_GOALVIEW_LAKE` | `lake` on PATH, else `~/.elan/bin/lake` | Lake binary |
+| `LEAN_GOALVIEW_ROOT` | auto-detected | Directory to run `lake serve` in |
+
+### Package root
+
+Zed starts a language server in the *worktree* root, which is not always the
+Lean package root — a repo that keeps its Lean code in a `lean/` subdirectory
+next to docs and scripts has no lakefile at the top. That case fails quietly:
+`lake serve` warns "no configuration file" and falls back to a plain
+`lean --server`, whose search path holds only the toolchain, so every project
+import reports `unknown module prefix` even though the package is built.
+
+The proxy resolves the package root itself — cwd, then the nearest ancestor
+with a lakefile, then a two-level scan below. Only an unambiguous match is
+used; a repo with several packages needs an explicit choice, per project:
+
+```json
+// .zed/settings.json
+{
+  "lsp": {
+    "lean4-lsp": {
+      "binary": { "arguments": ["--root", "lean"] }
+    }
+  }
+}
+```
 
 ## License
 

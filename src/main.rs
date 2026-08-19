@@ -26,6 +26,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -632,17 +633,103 @@ fn write_out(state: &State, last_written: &mut String) {
 
 // ------------------------------------------------------------------ main ---
 
-fn lake_command() -> Command {
-    if let Ok(lake) = std::env::var("LEAN_GOALVIEW_LAKE") {
-        let mut c = Command::new(lake);
-        c.arg("serve").arg("--");
-        return c;
+fn has_lakefile(dir: &Path) -> bool {
+    dir.join("lakefile.lean").is_file() || dir.join("lakefile.toml").is_file()
+}
+
+/// Shallow breadth-first scan for lakefiles under `root`, at most `max_depth`
+/// levels down. Returns every package root found: the caller only acts on an
+/// unambiguous single hit. Skips dotted directories (`.lake`, `.git`) — a
+/// dependency's own lakefile inside `.lake/packages` is not this project's.
+fn scan_for_packages(root: &Path, max_depth: usize) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut frontier = vec![root.to_path_buf()];
+    for _ in 0..max_depth {
+        let mut next = Vec::new();
+        for dir in frontier {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for e in entries.flatten() {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                if name.starts_with('.') || name == "node_modules" {
+                    continue;
+                }
+                let path = e.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                if has_lakefile(&path) {
+                    found.push(path);
+                } else {
+                    next.push(path);
+                }
+            }
+        }
+        if !found.is_empty() {
+            // Nearest level wins; don't descend past a package into its subdirs.
+            break;
+        }
+        frontier = next;
     }
+    found
+}
+
+/// Directory to run `lake serve` in — the Lean *package* root.
+///
+/// Zed starts a language server in the worktree root, which is not always the
+/// package root: a repo that keeps its Lean code in a `lean/` subdirectory
+/// (next to docs, scripts, a Python side) has no lakefile at the top. That
+/// case fails quietly rather than loudly — `lake serve` warns "no configuration
+/// file" and falls back to a plain `lean --server`, whose search path holds
+/// only the toolchain, so every project import dies with "unknown module
+/// prefix 'Foo'" even though the package is built.
+///
+/// Order: explicit override, cwd, nearest ancestor, then a shallow scan below.
+/// An ambiguous multi-package repo resolves to nothing and is left to the
+/// override — `--root DIR` in the project's `.zed/settings.json`.
+fn package_root() -> Option<PathBuf> {
+    // `--root DIR` beats the env var: Zed can set per-project LSP arguments in
+    // .zed/settings.json, but has no way to inject environment variables into a
+    // GUI-launched language server.
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        if a == "--root" {
+            return args.next().map(PathBuf::from);
+        }
+        if let Some(dir) = a.strip_prefix("--root=") {
+            return Some(PathBuf::from(dir));
+        }
+    }
+    if let Ok(dir) = std::env::var("LEAN_GOALVIEW_ROOT") {
+        return Some(PathBuf::from(dir));
+    }
+    let cwd = std::env::current_dir().ok()?;
+    if has_lakefile(&cwd) {
+        return None; // already right; no need to override the inherited cwd
+    }
+    for ancestor in cwd.ancestors().skip(1) {
+        if has_lakefile(ancestor) {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+    let mut hits = scan_for_packages(&cwd, 2);
+    (hits.len() == 1).then(|| hits.remove(0))
+}
+
+fn lake_command() -> Command {
     let home = std::env::var("HOME").unwrap_or_default();
-    let elan_lake = format!("{home}/.elan/bin/lake");
-    let lake = if std::path::Path::new(&elan_lake).is_file() { elan_lake } else { "lake".into() };
-    let mut c = Command::new(lake);
+    let mut c = match std::env::var("LEAN_GOALVIEW_LAKE") {
+        Ok(lake) => Command::new(lake),
+        Err(_) => {
+            let elan = format!("{home}/.elan/bin/lake");
+            Command::new(if Path::new(&elan).is_file() { elan } else { "lake".into() })
+        }
+    };
     c.arg("serve").arg("--");
+    if let Some(root) = package_root() {
+        eprintln!("lean-goalview: lake package root {}", root.display());
+        c.current_dir(root);
+    }
     c
 }
 
@@ -747,7 +834,7 @@ fn watch_mode() -> ! {
 }
 
 fn main() {
-    if std::env::args().nth(1).as_deref() == Some("--watch") {
+    if std::env::args().any(|a| a == "--watch") {
         watch_mode();
     }
     let mut child: Child = lake_command()
