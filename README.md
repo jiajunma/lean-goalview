@@ -25,6 +25,7 @@ Zed ──LSP──> lean-goalview (proxy) ──> lake serve
 - Also a fallback plain goal view over hover (`K`) and a live `.goalview.md`.
 - A goal view in Zed's **Debug panel** — the one goal surface you start by
   clicking rather than by remembering a key.
+- A **right-click → Show Code Actions → “Lean: open infoview”** entry.
 
 ## Install
 
@@ -64,6 +65,25 @@ These two keys are the ones printed in the window title, in the terminal
 pane's header, and at the foot of `.goalview.md` — the surfaces that stay
 visible once the window is hidden. Whatever you bind them to, the tasks are
 always reachable from `⌘⇧P` → *task: spawn*.
+
+### From the mouse
+
+Zed's right-click menu is a fixed list — extensions cannot add to it — but
+*Show Code Actions* is on that list, so the proxy appends its own action to
+every code-action response in a `.lean` buffer:
+
+> **Lean: open infoview**
+
+It carries a `command` and no `edit`, so picking it makes the editor send
+`workspace/executeCommand` back; the proxy answers that itself and summons the
+window. `⌘.` reaches the same entry from the keyboard.
+
+One cost, stated plainly: LSP lets a client mark a code-action request as
+automatic (the cursor-settle poll behind the gutter lightbulb) rather than
+invoked, and the proxy skips those — but Zed hardcodes `trigger_kind: None`,
+so it cannot be told apart and the lightbulb stays lit at the cursor line
+inside Lean files. Turn it off with `"gutter": { "inline_code_actions": false }`
+if that bothers you; the right-click entry works either way.
 
 ### The Debug panel
 

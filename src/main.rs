@@ -83,6 +83,9 @@ struct State {
     pending: HashMap<String, &'static str>,
     /// Editor hover request ids awaiting a server response we'll enrich.
     pending_hovers: HashSet<u64>,
+    /// Editor codeAction request ids whose responses get our own action
+    /// appended on the way back.
+    pending_code_actions: HashSet<u64>,
     next_id: u64,
     /// The editor's `initialize` request id, and lake serve's result for it —
     /// forwarded to the infoview as its `serverRestarted` payload.
@@ -643,6 +646,25 @@ fn write_out(state: &State, last_written: &mut String) {
 
 // ------------------------------------------------------------------ main ---
 
+/// Zed's right-click menu is a fixed list, but "Show Code Actions" is on it —
+/// so a code action is the only way to reach the infoview from the mouse.
+/// The action carries a `command` and no `edit`, which makes the editor send
+/// `workspace/executeCommand` back; the proxy answers it instead of `lake
+/// serve`, which never hears about this command at all.
+const OPEN_INFOVIEW_CMD: &str = "leanGoalview.openInfoview";
+
+/// Launch the infoview window, or summon the running one — the window is
+/// single-instance, so a second launch raises the first rather than opening a
+/// duplicate. No URL argument: it reads the port the proxy recorded.
+fn spawn_infoview_window() {
+    if let Some(w) = std::env::var("LEAN_GOALVIEW_WINDOW")
+        .ok()
+        .or_else(|| which_sibling("lean-goalview-window"))
+    {
+        let _ = Command::new(w).spawn();
+    }
+}
+
 fn has_lakefile(dir: &Path) -> bool {
     dir.join("lakefile.lean").is_file() || dir.join("lakefile.toml").is_file()
 }
@@ -946,9 +968,37 @@ fn main() {
                                         st.pending_hovers.insert(id);
                                     }
                                 }
+                                // Skip *automatic* codeAction requests, the ones
+                                // a client fires on cursor settle to decide
+                                // whether to light the gutter lightbulb; an action
+                                // appended to those leaves a lightbulb burning on
+                                // every line. Zed does not distinguish them — it
+                                // hardcodes `trigger_kind: None` — so under Zed
+                                // this injects on every request and the lightbulb
+                                // does stay lit inside Lean files. That is the
+                                // price of the entry existing at all; the gate is
+                                // here for clients that do say which is which.
+                                if method == "textDocument/codeAction"
+                                    && msg["params"]["context"]["triggerKind"] != json!(2)
+                                {
+                                    if let Some(id) = msg["id"].as_u64() {
+                                        st.pending_code_actions.insert(id);
+                                    }
+                                }
                                 drop(st);
                                 let _ = tick_tx.send(());
                             }
+                        }
+                        // Our own command, coming back from the editor after
+                        // the user picked the injected code action. `lake serve`
+                        // has never heard of it, so answer here and stop.
+                        "workspace/executeCommand"
+                            if msg["params"]["command"] == OPEN_INFOVIEW_CMD =>
+                        {
+                            spawn_infoview_window();
+                            let reply = json!({"jsonrpc": "2.0", "id": msg["id"], "result": null});
+                            write_frame(&mut std::io::stdout().lock(), reply.to_string().as_bytes());
+                            continue;
                         }
                         _ => {}
                     }
@@ -1007,6 +1057,47 @@ fn main() {
                             };
                             let _ = tx.send(out.to_string());
                         }
+                        continue;
+                    }
+                }
+
+                // The initialize result on its way to the editor: declare the
+                // command behind the injected code action, or the editor is
+                // entitled to drop the executeCommand request on the floor.
+                if !msg["id"].is_null() && msg["result"]["capabilities"].is_object() {
+                    let mut m = msg.clone();
+                    let cmds = m["result"]["capabilities"]["executeCommandProvider"]["commands"]
+                        .as_array()
+                        .cloned()
+                        .unwrap_or_default();
+                    if !cmds.iter().any(|c| c == OPEN_INFOVIEW_CMD) {
+                        let mut cmds = cmds;
+                        cmds.push(json!(OPEN_INFOVIEW_CMD));
+                        m["result"]["capabilities"]["executeCommandProvider"]["commands"] =
+                            json!(cmds);
+                        write_frame(&mut stdout.lock(), m.to_string().as_bytes());
+                        continue;
+                    }
+                }
+
+                // Response to an editor codeAction we flagged? Append the entry
+                // that puts the infoview one right-click away.
+                if let Some(id) = msg["id"].as_u64() {
+                    let flagged = state.lock().unwrap().pending_code_actions.remove(&id);
+                    if flagged {
+                        let mut m = msg.clone();
+                        let mut list = m["result"].as_array().cloned().unwrap_or_default();
+                        list.push(json!({
+                            "title": "Lean: open infoview",
+                            "kind": "source.leanGoalview.openInfoview",
+                            "command": {
+                                "title": "Lean: open infoview",
+                                "command": OPEN_INFOVIEW_CMD,
+                                "arguments": []
+                            }
+                        }));
+                        m["result"] = json!(list);
+                        write_frame(&mut stdout.lock(), m.to_string().as_bytes());
                         continue;
                     }
                 }
