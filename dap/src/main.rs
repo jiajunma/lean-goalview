@@ -104,6 +104,7 @@ struct Model {
 
 const REF_TACTIC: i64 = 1;
 const REF_MESSAGES: i64 = 2;
+const REF_TERM: i64 = 3;
 
 fn single_line(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -218,11 +219,22 @@ fn rebuild(model: &mut Model, snap: &Value) {
         model.vars.insert(goal_ref, children);
     }
     if let Some(t) = snap["termGoal"].as_str() {
+        // Same treatment as a tactic goal: the term goal carries its whole
+        // context, so flattening it into one leaf produced an unreadable
+        // one-liner. Header is the expected type; the context hangs under it.
+        let children = parse_goal(t);
+        let target = children
+            .iter()
+            .find(|v| v.name.starts_with('⊢'))
+            .map(|v| single_line(v.name.trim_start_matches('⊢').trim()))
+            .unwrap_or_else(|| single_line(t));
+        let expandable = children.iter().any(|v| !v.name.starts_with('⊢'));
         root.push(Var {
-            name: format!("expected : {}", single_line(t.trim_start_matches('⊢').trim())),
+            name: format!("expected : {target}"),
             value: String::new(),
-            reference: 0,
+            reference: if expandable { REF_TERM } else { 0 },
         });
+        model.vars.insert(REF_TERM, children);
     }
     model.vars.insert(REF_TACTIC, root);
 

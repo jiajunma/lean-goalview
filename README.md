@@ -23,6 +23,8 @@ Zed ──LSP──> lean-goalview (proxy) ──> lake serve
 - A floating window, auto-opened when you open a Lean file, following the
   cursor. ⌘T toggles always-on-top; ⌘W / Esc hides it.
 - Also a fallback plain goal view over hover (`K`) and a live `.goalview.md`.
+- A goal view in Zed's **Debug panel** — the one goal surface you start by
+  clicking rather than by remembering a key.
 
 ## Install
 
@@ -62,6 +64,24 @@ These two keys are the ones printed in the window title, in the terminal
 pane's header, and at the foot of `.goalview.md` — the surfaces that stay
 visible once the window is hidden. Whatever you bind them to, the tasks are
 always reachable from `⌘⇧P` → *task: spawn*.
+
+### The Debug panel
+
+Zed's Debug panel has real buttons, which makes it the one goal surface you
+never have to remember how to open. Install the extension in `zed-ext/` (Zed →
+*Extensions* → *Install Dev Extension*), then add a scenario — Zed reads this
+per worktree, so each Lean project needs its own:
+
+```json
+// .zed/debug.json
+[
+  { "label": "Lean Goals", "adapter": "lean-goalview", "request": "launch" }
+]
+```
+
+Open a `.lean` file first so the proxy is running, then hit ▶ on *Lean Goals*.
+The "program" is permanently suspended: one frame at the cursor, the tactic
+state and messages as the Variables tree, refreshed on every cursor move.
 
 ## How it works
 
