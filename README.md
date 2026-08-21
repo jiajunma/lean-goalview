@@ -85,6 +85,18 @@ so it cannot be told apart and the lightbulb stays lit at the cursor line
 inside Lean files. Turn it off with `"gutter": { "inline_code_actions": false }`
 if that bothers you; the right-click entry works either way.
 
+### Highlighting
+
+Unrelated to this proxy but worth knowing: Zed defaults `semantic_tokens` to
+`"off"`, so Lean gets only tree-sitter highlighting. Lean's syntax is
+user-extensible, so a static grammar cannot keep up and whole declarations
+fall back to plain text. The Lean server publishes semantic tokens — turn
+them on:
+
+```json
+"languages": { "Lean 4": { "semantic_tokens": "combined" } }
+```
+
 ### The Debug panel
 
 Zed's Debug panel has real buttons, which makes it the one goal surface you
